@@ -84,6 +84,34 @@ export type RuntimeContinuityDiff = {
   created_at: string;
 };
 
+export type RuntimeCausalEvent = {
+  id: string;
+  project_id: string;
+  branch_id: string | null;
+  scene_id: string | null;
+  event_key: string;
+  event_type: string;
+  subject: string;
+  predicate: string;
+  object_ref: string | null;
+  severity: number;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+export type RuntimeContradiction = {
+  id: string;
+  project_id: string;
+  branch_id: string | null;
+  scene_id: string | null;
+  contradiction_type: string;
+  summary: string;
+  severity: string;
+  resolved: boolean;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
 export type RuntimeState = {
   project: RuntimeProject;
   world: RuntimeWorld;
@@ -93,4 +121,6 @@ export type RuntimeState = {
   renderJobs: RuntimeRenderJob[];
   lineageEvents: RuntimeLineageEvent[];
   continuityDiffs: RuntimeContinuityDiff[];
+  causalEvents: RuntimeCausalEvent[];
+  contradictions: RuntimeContradiction[];
 };
