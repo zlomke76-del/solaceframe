@@ -1,163 +1,198 @@
+const sceneStates = [
+  {
+    id: "scene-001",
+    title: "Market evacuation",
+    summary: "Elena exits the lower market while the eastern bridge fails behind her.",
+    consequences: ["left-arm-injury", "eastern-transit-bridge-damaged"],
+    admissibility: "admissible"
+  },
+  {
+    id: "scene-002",
+    title: "Source file withheld",
+    summary: "Ren chooses not to disclose the origin of the courier case.",
+    consequences: ["trust-fracture-with-ren", "withheld-information"],
+    admissibility: "conditional"
+  }
+];
+
+const driftSignals = [
+  {
+    type: "identity",
+    severity: "low",
+    message: "Elena facial structure remains within accepted continuity bounds."
+  },
+  {
+    type: "timeline",
+    severity: "medium",
+    message: "Scene 003 must preserve left-arm injury from bridge collapse."
+  }
+];
+
+const branches = [
+  {
+    id: "branch-prime",
+    name: "Prime Continuity",
+    integrity: 94,
+    status: "active"
+  },
+  {
+    id: "branch-evacuation-fails",
+    name: "Evacuation Failure Variant",
+    integrity: 82,
+    status: "requires review"
+  },
+  {
+    id: "branch-ren-discloses",
+    name: "Ren Disclosure Variant",
+    integrity: 89,
+    status: "active"
+  }
+];
+
+const metrics = [
+  { label: "Continuity score", value: "84%" },
+  { label: "Active scenes", value: "2" },
+  { label: "Timeline events", value: "2" },
+  { label: "Reality branches", value: "3" }
+];
+
+const navItems = [
+  "Scene State",
+  "Characters",
+  "Worlds",
+  "Timeline",
+  "Branches",
+  "Drift",
+  "Memory",
+  "Provenance"
+];
 
 export default function Page() {
   return (
-    <main className="min-h-screen bg-[#020617] text-white flex">
-      <aside className="w-[260px] border-r border-white/10 p-6 hidden lg:flex flex-col">
-        <div className="mb-10">
-          <div className="text-xs tracking-[0.3em] text-yellow-400 mb-2">
-            MORAL CLARITY AI
-          </div>
-          <h1 className="text-4xl font-bold">SolaceFrame</h1>
-          <p className="text-white/50 mt-2 text-sm">
-            Continuity-governed synthetic media.
-          </p>
-        </div>
+    <main className="sf-shell">
+      <aside className="sf-sidebar">
+        <div className="sf-eyebrow">Moral Clarity AI</div>
+        <div className="sf-logo">SolaceFrame</div>
+        <p className="sf-muted">
+          Governed synthetic media with persistent causal continuity.
+        </p>
 
-        <nav className="space-y-3 text-sm">
-          {[
-            "Overview",
-            "Projects",
-            "Characters",
-            "Worlds",
-            "Timelines",
-            "Storyboard",
-            "Continuity",
-            "Governance",
-            "Provenance"
-          ].map((item, i) => (
-            <div
-              key={item}
-              className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 hover:border-yellow-400/40 transition"
-            >
-              <span className="text-white/40 mr-3">
-                {String(i + 1).padStart(2, "0")}
+        <nav className="sf-nav">
+          {navItems.map((item, index) => (
+            <div className="sf-nav-item" key={item}>
+              <span className="sf-nav-index">
+                {String(index + 1).padStart(2, "0")}
               </span>
-              {item}
+              <span>{item}</span>
             </div>
           ))}
         </nav>
       </aside>
 
-      <section className="flex-1 p-8 lg:p-12 overflow-auto">
-        <div className="flex items-center justify-between mb-10">
+      <section className="sf-main">
+        <div className="sf-topbar">
           <div>
-            <div className="text-xs tracking-[0.35em] text-yellow-400 mb-4">
-              PERSISTENT SYNTHETIC REALITY INFRASTRUCTURE
-            </div>
-
-            <h1 className="text-5xl lg:text-7xl font-black leading-[0.95] max-w-5xl">
-              Generate cinematic worlds with persistent continuity and governed identity.
+            <div className="sf-eyebrow">SolaceFrame V5 · Living Continuity Engine</div>
+            <h1 className="sf-title">
+              Persistent synthetic worlds where consequences survive the next render.
             </h1>
           </div>
 
-          <div className="hidden lg:flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.03] px-5 py-3">
-            <div className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
-            <span className="text-sm text-white/80">
-              Continuity synchronized
-            </span>
+          <div className="sf-status-pill">
+            <span className="sf-pulse" />
+            <span>State evolution active</span>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
-          <div className="rounded-[32px] border border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.02] p-8">
-            <div className="text-xs tracking-[0.3em] text-yellow-400 mb-4">
-              STORYBOARD ENGINE
-            </div>
-
-            <h2 className="text-4xl font-bold mb-4">
-              Long-form coherence pipeline
-            </h2>
-
-            <p className="text-white/70 max-w-3xl mb-8">
-              Preserve character identity, world memory, lineage, scene continuity,
-              and cinematic governance across persistent render timelines.
+        <div className="sf-grid">
+          <section className="sf-card sf-card-pad">
+            <div className="sf-eyebrow">Scene State Engine</div>
+            <h2 className="sf-card-title">Causal persistence is now part of the generation context.</h2>
+            <p className="sf-muted">
+              V5 tracks scene consequences, unresolved tensions, branch state,
+              and next-generation constraints before future renders are prepared.
             </p>
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              {[
-                "Character lock",
-                "Scene memory",
-                "Timeline sync",
-                "Governance gate"
-              ].map((item) => (
-                <div
-                  key={item}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="text-sm text-white/90">{item}</div>
-                  <div className="mt-3 h-1 rounded-full bg-gradient-to-r from-yellow-400 to-green-400" />
+            <div className="sf-metrics">
+              {metrics.map((metric) => (
+                <div className="sf-metric" key={metric.label}>
+                  <div className="sf-metric-value">{metric.value}</div>
+                  <div className="sf-metric-label">{metric.label}</div>
                 </div>
               ))}
             </div>
 
-            <div className="rounded-3xl border border-yellow-400/20 bg-black/20 p-5">
-              <div className="text-xs tracking-[0.3em] text-yellow-400 mb-4">
-                RENDER PIPELINE
+            <div className="sf-scene-stack">
+              {sceneStates.map((scene) => (
+                <div className="sf-scene-row" key={scene.id}>
+                  <strong>{scene.title}</strong>
+                  <div>
+                    <div>{scene.summary}</div>
+                    <div className="sf-consequence">
+                      Consequences: {scene.consequences.join(", ")}
+                    </div>
+                  </div>
+                  <span className="sf-tag">{scene.admissibility}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <aside className="sf-side-stack">
+            <section className="sf-card sf-card-pad">
+              <div className="sf-eyebrow">Continuity Drift</div>
+              <h2 className="sf-card-title">watch</h2>
+
+              <div className="sf-bar">
+                <div className="sf-bar-fill" style={{ width: "84%" }} />
               </div>
 
-              <div className="space-y-3 text-sm">
-                {[
-                  "World state synchronized",
-                  "Identity ontology preserved",
-                  "Branch arbitration stable",
-                  "Continuity drift: low",
-                  "Governance admissible",
-                  "Render path prepared"
-                ].map((item) => (
-                  <div
-                    key={item}
-                    className="flex items-center justify-between rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3"
-                  >
-                    <span>{item}</span>
-                    <span className="text-green-400">ACTIVE</span>
+              <div className="sf-branch-list">
+                {driftSignals.map((signal) => (
+                  <div className="sf-branch" key={signal.message}>
+                    <div className="sf-branch-top">
+                      <strong>{signal.type}</strong>
+                      <span className="sf-muted">{signal.severity}</span>
+                    </div>
+                    <div className="sf-muted">{signal.message}</div>
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
+            </section>
 
-          <div className="space-y-6">
-            <div className="rounded-[32px] border border-white/10 bg-white/[0.03] p-7">
-              <div className="text-xs tracking-[0.3em] text-yellow-400 mb-4">
-                CONTINUITY STATE
+            <section className="sf-card sf-card-pad">
+              <div className="sf-eyebrow">Reality Branches</div>
+
+              <div className="sf-branch-list">
+                {branches.map((branch) => (
+                  <div className="sf-branch" key={branch.id}>
+                    <div className="sf-branch-top">
+                      <strong>{branch.name}</strong>
+                      <span className="sf-muted">{branch.integrity}%</span>
+                    </div>
+                    <div className="sf-muted">{branch.status}</div>
+                  </div>
+                ))}
               </div>
+            </section>
 
-              <h3 className="text-3xl font-bold mb-6">
-                Identity lock: stable
-              </h3>
-
-              <div className="h-3 rounded-full bg-white/10 overflow-hidden mb-6">
-                <div className="h-full w-[88%] bg-gradient-to-r from-yellow-400 to-green-400 rounded-full" />
+            <section className="sf-card sf-card-pad">
+              <div className="sf-eyebrow">Compressed Memory</div>
+              <div className="sf-memory-box">
+                Two scenes are active in Prime Continuity. The world state must
+                preserve prior physical damage, character injury, degraded trust,
+                and persistent object lineage.
+                <br />
+                <br />
+                <strong>Next constraints:</strong>
+                <br />
+                Elena must retain her left-arm injury. Eastern bridge damage
+                must remain visible or be narratively repaired. Ren and Elena
+                cannot reset to neutral trust. The yellow courier case remains
+                a persistent object.
               </div>
-
-              <div className="space-y-4 text-white/80">
-                <div>• Character ontology preserved</div>
-                <div>• Environment memory synchronized</div>
-                <div>• Style drift monitored</div>
-                <div>• Provenance chain sealed</div>
-              </div>
-            </div>
-
-            <div className="rounded-[32px] border border-white/10 bg-white/[0.03] p-7">
-              <div className="text-xs tracking-[0.3em] text-yellow-400 mb-4">
-                WORLD GRAPH
-              </div>
-
-              <div className="aspect-square rounded-3xl border border-white/10 bg-black/20 relative overflow-hidden">
-                <div className="absolute inset-0 opacity-30">
-                  <div className="absolute top-1/2 left-1/2 h-40 w-40 -translate-x-1/2 -translate-y-1/2 rounded-full border border-yellow-400/40" />
-                  <div className="absolute top-[25%] left-[35%] h-5 w-5 rounded-full bg-yellow-400" />
-                  <div className="absolute top-[60%] left-[70%] h-5 w-5 rounded-full bg-green-400" />
-                  <div className="absolute top-[70%] left-[30%] h-5 w-5 rounded-full bg-cyan-400" />
-                  <div className="absolute top-[40%] left-[65%] h-5 w-5 rounded-full bg-pink-400" />
-                </div>
-
-                <div className="absolute bottom-5 left-5 text-sm text-white/70">
-                  Persistent world-state topology
-                </div>
-              </div>
-            </div>
-          </div>
+            </section>
+          </aside>
         </div>
       </section>
     </main>
