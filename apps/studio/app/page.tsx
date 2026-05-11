@@ -2,96 +2,96 @@
 
 import { useMemo, useState } from "react";
 
-const relationshipGraph = [
-  { from: "Elena", to: "Ren", state: "trust degraded", weight: 72 },
-  { from: "Ren", to: "Courier Network", state: "unverified authority", weight: 54 },
-  { from: "Elena", to: "Bridge Incident", state: "survivor linkage", weight: 81 }
+const worldNodes = [
+  { name: "Safehouse", status: "stable", x: "18%", y: "28%" },
+  { name: "Eastern Bridge", status: "damaged", x: "58%", y: "42%" },
+  { name: "Blackout Zone", status: "restricted", x: "76%", y: "24%" },
+  { name: "Transit Hub", status: "active", x: "42%", y: "70%" }
 ];
 
-const unresolved = [
-  "Origin file authenticity unresolved",
-  "Bridge sabotage actor unidentified",
-  "Timeline repair request pending",
-  "Courier chain integrity degraded"
-];
-
-const renderQueue = [
+const dependencyGraph = [
   {
-    id: "RQ-1042",
-    scene: "Bridge traversal sequence",
-    status: "Awaiting governance review",
-    admissibility: "conditional"
+    id: "scene-001",
+    title: "Bridge Collapse",
+    dependsOn: [],
+    impact: "irreversible"
   },
   {
-    id: "RQ-1043",
-    scene: "Safehouse dialogue continuity pass",
-    status: "Ready for render",
-    admissibility: "allow"
+    id: "scene-002",
+    title: "Courier Transfer",
+    dependsOn: ["scene-001"],
+    impact: "persistent-object"
+  },
+  {
+    id: "scene-003",
+    title: "Source File Withheld",
+    dependsOn: ["scene-002"],
+    impact: "relationship-fracture"
   }
 ];
 
-const branchStates = [
-  { branch: "Prime", divergence: 8, pressure: 32 },
-  { branch: "Alternate", divergence: 46, pressure: 67 },
-  { branch: "Review", divergence: 21, pressure: 58 }
-];
-
-const objectLineage = [
+const cameraContinuity = [
   {
-    object: "Yellow Courier Case",
-    ancestry: "market-transfer → bridge-event → safehouse-chain"
+    category: "Lighting continuity",
+    state: "stable",
+    note: "Cold rain + blue ambient preserved"
   },
   {
-    object: "Encrypted Source File",
-    ancestry: "unknown-origin → Ren custody → withheld-state"
+    category: "Wardrobe continuity",
+    state: "warning",
+    note: "Elena sleeve damage mismatch detected"
+  },
+  {
+    category: "Object placement",
+    state: "stable",
+    note: "Courier case retained across shots"
+  },
+  {
+    category: "Emotional continuity",
+    state: "conditional",
+    note: "Trust degradation unresolved"
   }
 ];
 
 export default function Page() {
-  const [scene, setScene] = useState(
-    "Elena requests a continuity repair while attempting to preserve the courier chain."
+  const [repairRequest, setRepairRequest] = useState(
+    "Repair timeline contradiction while preserving Elena's injury continuity."
   );
 
-  const governance = useMemo(() => {
-    const lower = scene.toLowerCase();
+  const repairAnalysis = useMemo(() => {
+    const lower = repairRequest.toLowerCase();
 
+    const repairs = [];
+    const risks = [];
     const preserved = [];
-    const violations = [];
-    const tensions = [];
 
     if (lower.includes("repair")) {
-      tensions.push("timeline repair requested");
+      repairs.push("Timeline repair pathway generated");
+    }
+
+    if (lower.includes("preserve")) {
+      preserved.push("Identity continuity retained");
+    }
+
+    if (lower.includes("injury")) {
+      preserved.push("Physical state continuity maintained");
     }
 
     if (lower.includes("reset")) {
-      violations.push("relationship reset violates persistent continuity");
+      risks.push("State reset would invalidate causal continuity");
     }
 
-    if (lower.includes("kill") || lower.includes("destroy")) {
-      violations.push("irreversible branch mutation detected");
-    }
-
-    if (lower.includes("courier")) {
-      preserved.push("persistent courier lineage preserved");
-    }
-
-    if (lower.includes("elena")) {
-      preserved.push("identity anchor retained");
+    if (lower.includes("merge")) {
+      risks.push("Branch merge requires admissibility recomputation");
     }
 
     return {
-      admissible: violations.length === 0,
+      repairs,
+      risks,
       preserved,
-      violations,
-      tensions,
-      drift:
-        violations.length > 0
-          ? "high"
-          : tensions.length > 0
-          ? "medium"
-          : "low"
+      admissible: risks.length === 0
     };
-  }, [scene]);
+  }, [repairRequest]);
 
   return (
     <main className="sf-shell">
@@ -101,86 +101,84 @@ export default function Page() {
 
         <div className="sf-nav">
           {[
-            "Living World",
-            "Governance",
-            "Relationship Graph",
-            "Render Queue",
-            "Branches",
-            "Lineage"
+            "Spatial Continuity",
+            "Timeline Repair",
+            "Scene Dependencies",
+            "Camera Memory",
+            "Branch Merge",
+            "World Map"
           ].map((item, index) => (
-            <div key={item} className="sf-nav-item">
+            <div className="sf-nav-item" key={item}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <span>{item}</span>
             </div>
           ))}
+        </div>
+
+        <div className="sf-note">
+          V9 introduces spatial + temporal continuity infrastructure.
         </div>
       </aside>
 
       <section className="sf-main">
         <div className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V8 · Governance Native Creation</div>
+            <div className="sf-eyebrow">SolaceFrame V9 · Spatial + Temporal Continuity</div>
             <h1 className="sf-title">
-              Synthetic worlds that explain why continuity survives.
+              Govern worlds across time, space, and consequence propagation.
             </h1>
           </div>
 
-          <div className="sf-status">Governance reasoning active</div>
+          <div className="sf-status">
+            Timeline integrity synchronized
+          </div>
         </div>
 
         <div className="sf-grid">
           <section className="sf-card">
-            <div className="sf-eyebrow">Continuity Input</div>
+            <div className="sf-eyebrow">World State Map</div>
 
-            <textarea
-              className="sf-textarea"
-              value={scene}
-              onChange={(e) => setScene(e.target.value)}
-            />
+            <div className="sf-map">
+              {worldNodes.map((node) => (
+                <div
+                  key={node.name}
+                  className={`sf-map-node ${node.status}`}
+                  style={{ left: node.x, top: node.y }}
+                >
+                  <span>{node.name}</span>
+                </div>
+              ))}
+            </div>
 
-            <div className="sf-governance">
-              <div className="sf-governance-block">
-                <h3>Preserved Constraints</h3>
-                {governance.preserved.map((item) => (
-                  <div key={item} className="sf-chip green">{item}</div>
-                ))}
-              </div>
-
-              <div className="sf-governance-block">
-                <h3>Violations</h3>
-                {governance.violations.length === 0 ? (
-                  <div className="sf-chip">No violations detected</div>
-                ) : (
-                  governance.violations.map((item) => (
-                    <div key={item} className="sf-chip red">{item}</div>
-                  ))
-                )}
-              </div>
-
-              <div className="sf-governance-block">
-                <h3>Unresolved Tensions</h3>
-                {governance.tensions.length === 0 ? (
-                  <div className="sf-chip">Stable continuity</div>
-                ) : (
-                  governance.tensions.map((item) => (
-                    <div key={item} className="sf-chip yellow">{item}</div>
-                  ))
-                )}
-              </div>
+            <div className="sf-map-legend">
+              <div><span className="dot stable" /> Stable</div>
+              <div><span className="dot damaged" /> Damaged</div>
+              <div><span className="dot restricted" /> Restricted</div>
             </div>
           </section>
 
           <section className="sf-card">
-            <div className="sf-eyebrow">Relationship Graph</div>
+            <div className="sf-eyebrow">Scene Dependency Graph</div>
 
-            <div className="sf-list">
-              {relationshipGraph.map((edge) => (
-                <div key={edge.from + edge.to} className="sf-row">
-                  <div>
-                    <strong>{edge.from}</strong> → <strong>{edge.to}</strong>
-                    <p>{edge.state}</p>
+            <div className="sf-stack">
+              {dependencyGraph.map((scene) => (
+                <div key={scene.id} className="sf-dependency">
+                  <div className="sf-row">
+                    <strong>{scene.title}</strong>
+                    <span>{scene.impact}</span>
                   </div>
-                  <span>{edge.weight}%</span>
+
+                  <div className="sf-dep-id">{scene.id}</div>
+
+                  {scene.dependsOn.length > 0 && (
+                    <div className="sf-chip-wrap">
+                      {scene.dependsOn.map((dep) => (
+                        <div key={dep} className="sf-chip">
+                          depends on {dep}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -189,68 +187,76 @@ export default function Page() {
 
         <div className="sf-grid lower">
           <section className="sf-card">
-            <div className="sf-eyebrow">Branch Divergence</div>
+            <div className="sf-eyebrow">Camera Continuity Memory</div>
 
-            {branchStates.map((branch) => (
-              <div key={branch.branch} className="sf-branch">
-                <div className="sf-row">
-                  <strong>{branch.branch}</strong>
-                  <span>{branch.divergence}% divergence</span>
-                </div>
-
-                <div className="sf-bar">
-                  <div
-                    className="sf-fill"
-                    style={{ width: `${branch.divergence}%` }}
-                  />
-                </div>
-
-                <small>Pressure: {branch.pressure}%</small>
-              </div>
-            ))}
-          </section>
-
-          <section className="sf-card">
-            <div className="sf-eyebrow">Render Queue</div>
-
-            <div className="sf-list">
-              {renderQueue.map((item) => (
-                <div key={item.id} className="sf-row">
+            <div className="sf-stack">
+              {cameraContinuity.map((item) => (
+                <div className="sf-camera-row" key={item.category}>
                   <div>
-                    <strong>{item.scene}</strong>
-                    <p>{item.status}</p>
+                    <strong>{item.category}</strong>
+                    <p>{item.note}</p>
                   </div>
-                  <span>{item.admissibility}</span>
+
+                  <div className={`sf-badge ${item.state}`}>
+                    {item.state}
+                  </div>
                 </div>
               ))}
             </div>
           </section>
-        </div>
 
-        <section className="sf-card">
-          <div className="sf-eyebrow">Object Lineage</div>
+          <section className="sf-card">
+            <div className="sf-eyebrow">Timeline Repair Engine</div>
 
-          <div className="sf-list">
-            {objectLineage.map((item) => (
-              <div key={item.object} className="sf-row">
-                <div>
-                  <strong>{item.object}</strong>
-                  <p>{item.ancestry}</p>
+            <textarea
+              className="sf-textarea"
+              value={repairRequest}
+              onChange={(e) => setRepairRequest(e.target.value)}
+            />
+
+            <div className="sf-analysis-grid">
+              <div>
+                <h3>Repair Actions</h3>
+
+                <div className="sf-chip-wrap">
+                  {repairAnalysis.repairs.map((item) => (
+                    <div key={item} className="sf-chip green">{item}</div>
+                  ))}
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
 
-        <section className="sf-card">
-          <div className="sf-eyebrow">Unresolved Contradictions</div>
+              <div>
+                <h3>Preserved State</h3>
 
-          <div className="sf-chip-wrap">
-            {unresolved.map((item) => (
-              <div key={item} className="sf-chip red">{item}</div>
-            ))}
-          </div>
-        </section>
+                <div className="sf-chip-wrap">
+                  {repairAnalysis.preserved.map((item) => (
+                    <div key={item} className="sf-chip blue">{item}</div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h3>Governance Risks</h3>
+
+                <div className="sf-chip-wrap">
+                  {repairAnalysis.risks.length === 0 ? (
+                    <div className="sf-chip">No critical violations</div>
+                  ) : (
+                    repairAnalysis.risks.map((item) => (
+                      <div key={item} className="sf-chip red">{item}</div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="sf-footer-status">
+              {repairAnalysis.admissible
+                ? "Repair pathway admissible"
+                : "Repair requires operator arbitration"}
+            </div>
+          </section>
+        </div>
       </section>
     </main>
   );
