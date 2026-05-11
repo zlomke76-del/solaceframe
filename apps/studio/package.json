@@ -1,0 +1,19 @@
+{
+  "name": "solaceframe",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "yarn@1.22.19",
+  "scripts": {
+    "dev": "next dev apps/studio",
+    "build": "next build apps/studio",
+    "start": "next start apps/studio"
+  },
+  "dependencies": {
+    "next": "14.2.32",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
