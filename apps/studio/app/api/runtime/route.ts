@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { ensureSeedRuntime } from "@/lib/runtime/seed";
-import { analyzeScene, computeBranchDelta, mutateCharacters, mutateWorld } from "@/lib/runtime/engine";
+import {
+  analyzeScene,
+  computeBranchDelta,
+  evaluateRuntimeAdmissibility,
+  mutateCharacters,
+  mutateWorld
+} from "@/lib/runtime/engine";
 import type {
   RuntimeCausalEvent,
   RuntimeCharacter,
@@ -10,6 +16,8 @@ import type {
 } from "@/lib/runtime/types";
 
 export const dynamic = "force-dynamic";
+
+type RuntimeAction = "compile_scene" | "fork_branch" | "resolve_contradiction";
 
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
@@ -54,196 +62,380 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const sceneText = String(body.sceneText || "").trim();
+    const action = String(body.action || "compile_scene") as RuntimeAction;
 
-    if (!sceneText) {
-      return NextResponse.json({ ok: false, error: "sceneText is required" }, { status: 400 });
+    if (action === "fork_branch") {
+      return await forkBranch(body);
     }
 
-    const projectId = await ensureSeedRuntime();
-    const supabase = getSupabaseAdmin().schema("solaceframe");
-    const state = await loadRuntimeState(projectId);
-
-    const unresolvedContradictions = state.contradictions.filter((item) => !item.resolved);
-    const analysis = analyzeScene(
-      sceneText,
-      state.world,
-      state.characters,
-      state.causalEvents,
-      unresolvedContradictions
-    );
-
-    const beforeState = {
-      world: state.world,
-      characters: state.characters,
-      causalEvents: state.causalEvents.slice(0, 20),
-      unresolvedContradictions
-    };
-
-    const nextWorld = mutateWorld(state.world, analysis);
-    const nextCharacters = mutateCharacters(state.characters, sceneText, analysis);
-    const branchDelta = computeBranchDelta(analysis);
-
-    const { data: scene, error: sceneError } = await supabase
-      .from("scenes")
-      .insert({
-        project_id: projectId,
-        branch_id: state.activeBranch.id,
-        title: analysis.title,
-        scene_text: sceneText,
-        admissibility: analysis.admissibility,
-        drift_risk: analysis.driftRisk,
-        compiled_packet: analysis.packet
-      })
-      .select("*")
-      .single();
-
-    if (sceneError) throw sceneError;
-
-    if (analysis.causalEvents.length > 0) {
-      const { error: causalError } = await supabase
-        .from("causal_events")
-        .insert(
-          analysis.causalEvents.map((event) => ({
-            project_id: projectId,
-            branch_id: state.activeBranch.id,
-            scene_id: scene.id,
-            event_key: event.event_key,
-            event_type: event.event_type,
-            subject: event.subject,
-            predicate: event.predicate,
-            object_ref: event.object_ref,
-            severity: event.severity,
-            payload: event.payload
-          }))
-        );
-
-      if (causalError) throw causalError;
+    if (action === "resolve_contradiction") {
+      return await resolveContradiction(body);
     }
 
-    if (analysis.contradictions.length > 0) {
-      const { error: contradictionError } = await supabase
-        .from("contradictions")
-        .insert(
-          analysis.contradictions.map((contradiction) => ({
-            project_id: projectId,
-            branch_id: state.activeBranch.id,
-            scene_id: scene.id,
-            contradiction_type: contradiction.contradiction_type,
-            summary: contradiction.summary,
-            severity: contradiction.severity,
-            resolved: false,
-            payload: contradiction.payload
-          }))
-        );
-
-      if (contradictionError) throw contradictionError;
-    }
-
-    const { error: worldError } = await supabase
-      .from("worlds")
-      .update({
-        state: nextWorld.state,
-        pressure: nextWorld.pressure
-      })
-      .eq("id", state.world.id);
-
-    if (worldError) throw worldError;
-
-    for (const character of nextCharacters) {
-      const { error: characterError } = await supabase
-        .from("characters")
-        .update({
-          state: character.state,
-          continuity_score: character.continuity_score,
-          pressure: character.pressure
-        })
-        .eq("id", character.id);
-
-      if (characterError) throw characterError;
-    }
-
-    const nextDivergence = Math.min(
-      100,
-      state.activeBranch.divergence_score + branchDelta.divergenceDelta
-    );
-
-    const { error: branchError } = await supabase
-      .from("branches")
-      .update({
-        divergence_score: nextDivergence,
-        status: analysis.admissibility === "blocked" ? "blocked-review" : state.activeBranch.status
-      })
-      .eq("id", state.activeBranch.id);
-
-    if (branchError) throw branchError;
-
-    const { data: renderJob, error: renderError } = await supabase
-      .from("render_jobs")
-      .insert({
-        project_id: projectId,
-        scene_id: scene.id,
-        branch_id: state.activeBranch.id,
-        status: analysis.admissibility === "blocked" ? "blocked" : "queued",
-        model_route: "vercel-ai-gateway:pending",
-        prompt: buildCanonicalPrompt(sceneText, analysis.packet),
-        packet: analysis.packet
-      })
-      .select("*")
-      .single();
-
-    if (renderError) throw renderError;
-
-    const afterState = {
-      world: nextWorld,
-      characters: nextCharacters,
-      causalEvents: analysis.causalEvents,
-      contradictions: analysis.contradictions,
-      branch: {
-        ...state.activeBranch,
-        divergence_score: nextDivergence
-      }
-    };
-
-    const { error: diffError } = await supabase
-      .from("continuity_diffs")
-      .insert({
-        project_id: projectId,
-        scene_id: scene.id,
-        before_state: beforeState,
-        after_state: afterState,
-        preserved: analysis.preserve,
-        mutated: analysis.mutated,
-        violations: analysis.violations
-      });
-
-    if (diffError) throw diffError;
-
-    const { error: lineageError } = await supabase
-      .from("lineage_events")
-      .insert({
-        project_id: projectId,
-        scene_id: scene.id,
-        render_job_id: renderJob.id,
-        event_type: "causal-scene-compiled",
-        summary: `Causal scene compiled: ${analysis.title}`,
-        payload: {
-          admissibility: analysis.admissibility,
-          driftRisk: analysis.driftRisk,
-          renderJobId: renderJob.id,
-          causalEvents: analysis.causalEvents,
-          contradictions: analysis.contradictions,
-          renderConstraints: analysis.renderConstraints
-        }
-      });
-
-    if (lineageError) throw lineageError;
-
-    const nextState = await loadRuntimeState(projectId);
-    return NextResponse.json({ ok: true, analysis, state: nextState });
+    return await compileScene(body);
   } catch (error) {
     return jsonError(error);
   }
+}
+
+async function compileScene(body: Record<string, unknown>) {
+  const sceneText = String(body.sceneText || "").trim();
+
+  if (!sceneText) {
+    return NextResponse.json({ ok: false, error: "sceneText is required" }, { status: 400 });
+  }
+
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+
+  const unresolvedContradictions = state.contradictions.filter((item) => !item.resolved);
+  const analysis = analyzeScene(
+    sceneText,
+    state.world,
+    state.characters,
+    state.causalEvents,
+    unresolvedContradictions
+  );
+
+  const beforeState = {
+    world: state.world,
+    characters: state.characters,
+    causalEvents: state.causalEvents.slice(0, 20),
+    unresolvedContradictions,
+    activeBranch: state.activeBranch,
+    admissibilityReport: state.admissibilityReport
+  };
+
+  const nextWorld = mutateWorld(state.world, analysis);
+  const nextCharacters = mutateCharacters(state.characters, sceneText, analysis);
+  const branchDelta = computeBranchDelta(analysis);
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .insert({
+      project_id: projectId,
+      branch_id: state.activeBranch.id,
+      title: analysis.title,
+      scene_text: sceneText,
+      admissibility: analysis.admissibility,
+      drift_risk: analysis.driftRisk,
+      compiled_packet: analysis.packet
+    })
+    .select("*")
+    .single();
+
+  if (sceneError) throw sceneError;
+
+  if (analysis.causalEvents.length > 0) {
+    const { error: causalError } = await supabase
+      .from("causal_events")
+      .insert(
+        analysis.causalEvents.map((event) => ({
+          project_id: projectId,
+          branch_id: state.activeBranch.id,
+          scene_id: scene.id,
+          parent_event_id: event.parent_event_id ?? null,
+          event_key: event.event_key,
+          event_type: event.event_type,
+          subject: event.subject,
+          predicate: event.predicate,
+          object_ref: event.object_ref,
+          severity: event.severity,
+          reversibility: event.reversibility,
+          repaired: false,
+          payload: event.payload
+        }))
+      );
+
+    if (causalError) throw causalError;
+  }
+
+  if (analysis.contradictions.length > 0) {
+    const { error: contradictionError } = await supabase
+      .from("contradictions")
+      .insert(
+        analysis.contradictions.map((contradiction) => ({
+          project_id: projectId,
+          branch_id: state.activeBranch.id,
+          scene_id: scene.id,
+          contradiction_type: contradiction.contradiction_type,
+          summary: contradiction.summary,
+          severity: contradiction.severity,
+          resolved: false,
+          payload: contradiction.payload
+        }))
+      );
+
+    if (contradictionError) throw contradictionError;
+  }
+
+  const { error: worldError } = await supabase
+    .from("worlds")
+    .update({
+      state: nextWorld.state,
+      pressure: nextWorld.pressure
+    })
+    .eq("id", state.world.id);
+
+  if (worldError) throw worldError;
+
+  for (const character of nextCharacters) {
+    const { error: characterError } = await supabase
+      .from("characters")
+      .update({
+        state: character.state,
+        continuity_score: character.continuity_score,
+        pressure: character.pressure
+      })
+      .eq("id", character.id);
+
+    if (characterError) throw characterError;
+  }
+
+  const nextDivergence = Math.min(
+    100,
+    state.activeBranch.divergence_score + branchDelta.divergenceDelta
+  );
+
+  const { error: branchError } = await supabase
+    .from("branches")
+    .update({
+      divergence_score: nextDivergence,
+      status: analysis.admissibility === "blocked" ? "blocked-review" : state.activeBranch.status
+    })
+    .eq("id", state.activeBranch.id);
+
+  if (branchError) throw branchError;
+
+  const { data: renderJob, error: renderError } = await supabase
+    .from("render_jobs")
+    .insert({
+      project_id: projectId,
+      scene_id: scene.id,
+      branch_id: state.activeBranch.id,
+      status: analysis.admissibility === "blocked" ? "blocked" : "queued",
+      model_route: "vercel-ai-gateway:pending",
+      prompt: buildCanonicalPrompt(sceneText, analysis.packet),
+      packet: analysis.packet
+    })
+    .select("*")
+    .single();
+
+  if (renderError) throw renderError;
+
+  const afterState = {
+    world: nextWorld,
+    characters: nextCharacters,
+    causalEvents: analysis.causalEvents,
+    contradictions: analysis.contradictions,
+    branch: {
+      ...state.activeBranch,
+      divergence_score: nextDivergence
+    }
+  };
+
+  const { error: diffError } = await supabase
+    .from("continuity_diffs")
+    .insert({
+      project_id: projectId,
+      scene_id: scene.id,
+      before_state: beforeState,
+      after_state: afterState,
+      preserved: analysis.preserve,
+      mutated: analysis.mutated,
+      violations: analysis.violations
+    });
+
+  if (diffError) throw diffError;
+
+  const { error: lineageError } = await supabase
+    .from("lineage_events")
+    .insert({
+      project_id: projectId,
+      scene_id: scene.id,
+      render_job_id: renderJob.id,
+      event_type: "causal-scene-compiled",
+      summary: `Causal scene compiled: ${analysis.title}`,
+      payload: {
+        admissibility: analysis.admissibility,
+        driftRisk: analysis.driftRisk,
+        renderJobId: renderJob.id,
+        causalEvents: analysis.causalEvents,
+        contradictions: analysis.contradictions,
+        renderConstraints: analysis.renderConstraints
+      }
+    });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, analysis, state: nextState });
+}
+
+async function forkBranch(body: Record<string, unknown>) {
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+  const forkName = String(body.name || `Fork from ${state.activeBranch.name}`).trim();
+  const forkReason = String(body.reason || "Operator-created governed branch fork").trim();
+
+  const snapshot = {
+    forkedAt: new Date().toISOString(),
+    parentBranch: state.activeBranch,
+    world: state.world,
+    characters: state.characters,
+    unresolvedContradictions: state.contradictions.filter((item) => !item.resolved),
+    causalEvents: state.causalEvents.slice(0, 40),
+    admissibilityReport: state.admissibilityReport
+  };
+
+  const { data: branch, error: branchError } = await supabase
+    .from("branches")
+    .insert({
+      project_id: projectId,
+      parent_branch_id: state.activeBranch.id,
+      name: forkName,
+      divergence_score: Math.min(100, state.activeBranch.divergence_score + 4),
+      status: "active-fork",
+      snapshot,
+      fork_reason: forkReason
+    })
+    .select("*")
+    .single();
+
+  if (branchError) throw branchError;
+
+  const { error: projectError } = await supabase
+    .from("projects")
+    .update({ active_branch_id: branch.id })
+    .eq("id", projectId);
+
+  if (projectError) throw projectError;
+
+  const { error: lineageError } = await supabase
+    .from("lineage_events")
+    .insert({
+      project_id: projectId,
+      event_type: "branch-forked",
+      summary: `Branch forked from ${state.activeBranch.name}: ${forkName}`,
+      payload: {
+        parentBranchId: state.activeBranch.id,
+        childBranchId: branch.id,
+        forkReason,
+        snapshot
+      }
+    });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, branch, state: nextState });
+}
+
+async function resolveContradiction(body: Record<string, unknown>) {
+  const contradictionId = String(body.contradictionId || "").trim();
+  const repairNote = String(body.repairNote || "Contradiction resolved through governed repair review.").trim();
+
+  if (!contradictionId) {
+    return NextResponse.json({ ok: false, error: "contradictionId is required" }, { status: 400 });
+  }
+
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+
+  const contradiction = state.contradictions.find((item) => item.id === contradictionId);
+
+  if (!contradiction) {
+    return NextResponse.json({ ok: false, error: "Contradiction not found in active runtime" }, { status: 404 });
+  }
+
+  const { data: repairEvent, error: repairError } = await supabase
+    .from("causal_events")
+    .insert({
+      project_id: projectId,
+      branch_id: contradiction.branch_id ?? state.activeBranch.id,
+      scene_id: contradiction.scene_id,
+      event_key: `repair:${contradiction.id}`,
+      event_type: "contradiction-repaired",
+      subject: contradiction.contradiction_type,
+      predicate: "resolved-by-governed-repair",
+      object_ref: contradiction.id,
+      severity: 1,
+      reversibility: "reversible",
+      repaired: true,
+      payload: {
+        contradictionId: contradiction.id,
+        summary: contradiction.summary,
+        repairNote
+      }
+    })
+    .select("*")
+    .single();
+
+  if (repairError) throw repairError;
+
+  const { error: contradictionError } = await supabase
+    .from("contradictions")
+    .update({
+      resolved: true,
+      resolved_at: new Date().toISOString(),
+      repair_causal_event_id: repairEvent.id,
+      repair_note: repairNote,
+      payload: {
+        ...contradiction.payload,
+        repairNote,
+        repairCausalEventId: repairEvent.id
+      }
+    })
+    .eq("id", contradiction.id);
+
+  if (contradictionError) throw contradictionError;
+
+  const nextPressure = Math.max(0, state.world.pressure - 6);
+  const currentRepairs = Array.isArray(state.world.state.repairs) ? state.world.state.repairs : [];
+
+  const { error: worldError } = await supabase
+    .from("worlds")
+    .update({
+      pressure: nextPressure,
+      state: {
+        ...state.world.state,
+        pressureTrend: "repairing",
+        repairs: [
+          ...currentRepairs,
+          {
+            at: new Date().toISOString(),
+            contradictionId: contradiction.id,
+            repairEventId: repairEvent.id,
+            repairNote
+          }
+        ]
+      }
+    })
+    .eq("id", state.world.id);
+
+  if (worldError) throw worldError;
+
+  const { error: lineageError } = await supabase
+    .from("lineage_events")
+    .insert({
+      project_id: projectId,
+      scene_id: contradiction.scene_id,
+      event_type: "contradiction-resolved",
+      summary: `Contradiction resolved: ${contradiction.summary}`,
+      payload: {
+        contradictionId: contradiction.id,
+        repairEventId: repairEvent.id,
+        repairNote
+      }
+    });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, repairEvent, state: nextState });
 }
 
 async function loadRuntimeState(projectId: string) {
@@ -303,6 +495,7 @@ async function loadRuntimeState(projectId: string) {
   if (!activeBranch) throw new Error("Active branch not found.");
 
   const [
+    branchesResult,
     charactersResult,
     scenesResult,
     renderJobsResult,
@@ -311,6 +504,7 @@ async function loadRuntimeState(projectId: string) {
     causalEventsResult,
     contradictionsResult
   ] = await Promise.all([
+    supabase.from("branches").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
     supabase.from("characters").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
     supabase.from("scenes").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
     supabase.from("render_jobs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
@@ -320,6 +514,7 @@ async function loadRuntimeState(projectId: string) {
     supabase.from("contradictions").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(40)
   ]);
 
+  if (branchesResult.error) throw branchesResult.error;
   if (charactersResult.error) throw charactersResult.error;
   if (scenesResult.error) throw scenesResult.error;
   if (renderJobsResult.error) throw renderJobsResult.error;
@@ -328,17 +523,28 @@ async function loadRuntimeState(projectId: string) {
   if (causalEventsResult.error) throw causalEventsResult.error;
   if (contradictionsResult.error) throw contradictionsResult.error;
 
+  const causalEvents = (causalEventsResult.data ?? []) as RuntimeCausalEvent[];
+  const contradictions = (contradictionsResult.data ?? []) as RuntimeContradiction[];
+  const admissibilityReport = evaluateRuntimeAdmissibility({
+    world: world as RuntimeWorld,
+    activeBranch,
+    causalEvents,
+    contradictions
+  });
+
   return {
     project,
     world,
     activeBranch,
+    branches: branchesResult.data ?? [],
     characters: (charactersResult.data ?? []) as RuntimeCharacter[],
     scenes: scenesResult.data ?? [],
     renderJobs: renderJobsResult.data ?? [],
     lineageEvents: lineageEventsResult.data ?? [],
     continuityDiffs: continuityDiffsResult.data ?? [],
-    causalEvents: (causalEventsResult.data ?? []) as RuntimeCausalEvent[],
-    contradictions: (contradictionsResult.data ?? []) as RuntimeContradiction[]
+    causalEvents,
+    contradictions,
+    admissibilityReport
   };
 }
 
@@ -346,7 +552,7 @@ function buildCanonicalPrompt(sceneText: string, packet: Record<string, unknown>
   return [
     "Governed synthetic media render.",
     `Scene: ${sceneText}`,
-    "The render must obey causal constraints, continuity diffs, persistent object lineage, and unresolved contradictions.",
+    "The render must obey causal constraints, continuity diffs, persistent object lineage, branch state, repair lineage, and unresolved contradictions.",
     `Packet: ${JSON.stringify(packet)}`
   ].join("\n");
 }
