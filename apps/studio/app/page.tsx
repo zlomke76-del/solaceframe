@@ -1,305 +1,258 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { RuntimeState } from "@/lib/runtime/types";
 
-type Character = {
-  id: string;
-  name: string;
-  emotionalState: string;
-  injury: string;
-  continuity: number;
+type ApiRuntimeResponse = {
+  ok: boolean;
+  state?: RuntimeState;
+  error?: string;
 };
-
-type RenderItem = {
-  id: string;
-  scene: string;
-  status: string;
-  branch: string;
-  timestamp: string;
-};
-
-const defaultCharacters: Character[] = [
-  {
-    id: "char-001",
-    name: "Elena Voss",
-    emotionalState: "guarded",
-    injury: "left-arm injury",
-    continuity: 94
-  },
-  {
-    id: "char-002",
-    name: "Ren Kaito",
-    emotionalState: "withholding",
-    injury: "none",
-    continuity: 87
-  }
-];
-
-const initialRenders: RenderItem[] = [
-  {
-    id: "render-001",
-    scene: "Bridge traversal continuity render",
-    status: "queued",
-    branch: "prime",
-    timestamp: "T+00:12"
-  }
-];
 
 export default function Page() {
-  const [sceneInput, setSceneInput] = useState(
+  const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  const [sceneText, setSceneText] = useState(
     "Elena enters the flooded transit corridor while protecting the yellow courier case."
   );
+  const [loading, setLoading] = useState(true);
+  const [compiling, setCompiling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [characters, setCharacters] = useState<Character[]>(defaultCharacters);
-  const [renderQueue, setRenderQueue] = useState<RenderItem[]>(initialRenders);
-  const [worldPressure, setWorldPressure] = useState(38);
+  async function loadRuntime() {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/runtime", {
+        cache: "no-store"
+      });
+
+      const data = (await response.json()) as ApiRuntimeResponse;
+
+      if (!data.ok || !data.state) {
+        throw new Error(data.error || "Unable to load runtime");
+      }
+
+      setRuntime(data.state);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown load error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function compileScene() {
+    const clean = sceneText.trim();
+    if (!clean) return;
+
+    setCompiling(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/runtime", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ sceneText: clean })
+      });
+
+      const data = (await response.json()) as ApiRuntimeResponse;
+
+      if (!data.ok || !data.state) {
+        throw new Error(data.error || "Unable to compile scene");
+      }
+
+      setRuntime(data.state);
+      setSceneText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown compile error");
+    } finally {
+      setCompiling(false);
+    }
+  }
 
   useEffect(() => {
-    const saved = localStorage.getItem("solaceframe-v11-state");
-
-    if (saved) {
-      const parsed = JSON.parse(saved);
-
-      setCharacters(parsed.characters || defaultCharacters);
-      setRenderQueue(parsed.renderQueue || initialRenders);
-      setWorldPressure(parsed.worldPressure || 38);
-    }
+    void loadRuntime();
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(
-      "solaceframe-v11-state",
-      JSON.stringify({
-        characters,
-        renderQueue,
-        worldPressure
-      })
-    );
-  }, [characters, renderQueue, worldPressure]);
+  const latestDiff = runtime?.continuityDiffs?.[0] ?? null;
+  const latestJob = runtime?.renderJobs?.[0] ?? null;
 
-  const continuityPacket = useMemo(() => {
-    const lower = sceneInput.toLowerCase();
-
-    const preserve = [];
-    const risks = [];
-    const mutations = [];
-
-    if (lower.includes("courier")) {
-      preserve.push("persistent courier lineage");
-    }
-
-    if (lower.includes("flood")) {
-      mutations.push("environment pressure increased");
-    }
-
-    if (lower.includes("injury")) {
-      preserve.push("physical continuity retained");
-    }
-
-    if (lower.includes("reset")) {
-      risks.push("invalid continuity reset detected");
-    }
-
-    return {
-      preserve,
-      risks,
-      mutations,
-      admissible: risks.length === 0
-    };
-  }, [sceneInput]);
-
-  function compileScene() {
-    const id = `render-${Date.now()}`;
-
-    const nextRender = {
-      id,
-      scene: sceneInput,
-      status: continuityPacket.admissible ? "approved" : "review",
-      branch: "prime",
-      timestamp: new Date().toLocaleTimeString()
-    };
-
-    setRenderQueue((prev) => [nextRender, ...prev]);
-
-    if (sceneInput.toLowerCase().includes("flood")) {
-      setWorldPressure((prev) => Math.min(prev + 7, 100));
-    }
-
-    setCharacters((prev) =>
-      prev.map((char) => {
-        if (sceneInput.toLowerCase().includes("elena") && char.name.includes("Elena")) {
-          return {
-            ...char,
-            emotionalState: "stressed",
-            continuity: Math.max(char.continuity - 2, 0)
-          };
-        }
-
-        return char;
-      })
-    );
-  }
-
-  function exportState() {
-    const payload = JSON.stringify(
-      {
-        characters,
-        renderQueue,
-        worldPressure
-      },
-      null,
-      2
-    );
-
-    const blob = new Blob([payload], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "solaceframe-state.json";
-    a.click();
-
-    URL.revokeObjectURL(url);
-  }
-
-  function resetState() {
-    localStorage.removeItem("solaceframe-v11-state");
-    setCharacters(defaultCharacters);
-    setRenderQueue(initialRenders);
-    setWorldPressure(38);
-  }
+  const worldState = useMemo(() => {
+    if (!runtime?.world?.state) return {};
+    return runtime.world.state;
+  }, [runtime]);
 
   return (
     <main className="sf-shell">
       <aside className="sf-sidebar">
         <div className="sf-eyebrow">Moral Clarity AI</div>
         <div className="sf-logo">SolaceFrame</div>
+        <p className="sf-muted">Supabase-backed governed synthetic runtime.</p>
 
-        <div className="sf-nav">
+        <nav className="sf-nav">
           {[
             "Runtime",
-            "Continuity",
+            "Scene Mutation",
+            "Continuity Diff",
+            "Render Jobs",
             "Characters",
-            "World State",
-            "Render Queue",
             "Lineage"
-          ].map((item, i) => (
+          ].map((item, index) => (
             <div className="sf-nav-item" key={item}>
-              <span>{String(i + 1).padStart(2, "0")}</span>
+              <span>{String(index + 1).padStart(2, "0")}</span>
               <span>{item}</span>
             </div>
           ))}
-        </div>
+        </nav>
 
-        <div className="sf-actions">
-          <button onClick={exportState}>Export State</button>
-          <button onClick={resetState}>Reset Runtime</button>
-        </div>
+        <button className="sf-secondary" onClick={() => void loadRuntime()}>
+          Refresh Runtime
+        </button>
       </aside>
 
       <section className="sf-main">
-        <div className="sf-top">
+        <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V11 · Governed Runtime</div>
-
+            <div className="sf-eyebrow">SolaceFrame V12 · Supabase Runtime</div>
             <h1 className="sf-title">
-              Continuity becomes a living system, not a static prompt.
+              State, mutation, lineage, and render jobs now exist in the database.
             </h1>
           </div>
 
           <div className="sf-status">
-            Runtime state active
+            {loading ? "Loading runtime" : "Runtime backed by solaceframe schema"}
           </div>
-        </div>
+        </header>
 
-        <div className="sf-grid">
+        {error ? <div className="sf-error">{error}</div> : null}
+
+        {!runtime && !loading ? (
           <section className="sf-card">
-            <div className="sf-eyebrow">Scene Compiler</div>
-
-            <textarea
-              className="sf-textarea"
-              value={sceneInput}
-              onChange={(e) => setSceneInput(e.target.value)}
-            />
-
-            <button className="sf-primary" onClick={compileScene}>
-              Compile Into Runtime
-            </button>
-
-            <div className="sf-chip-wrap">
-              {continuityPacket.preserve.map((item) => (
-                <div key={item} className="sf-chip green">{item}</div>
-              ))}
-
-              {continuityPacket.mutations.map((item) => (
-                <div key={item} className="sf-chip blue">{item}</div>
-              ))}
-
-              {continuityPacket.risks.map((item) => (
-                <div key={item} className="sf-chip red">{item}</div>
-              ))}
-            </div>
+            <h2>Runtime unavailable</h2>
+            <p className="sf-muted">
+              Confirm the Supabase migration has been run and the Vercel environment variables are set.
+            </p>
           </section>
+        ) : null}
 
-          <section className="sf-card">
-            <div className="sf-eyebrow">World Pressure</div>
+        {runtime ? (
+          <>
+            <div className="sf-grid">
+              <section className="sf-card">
+                <div className="sf-eyebrow">Scene Mutation Engine</div>
+                <textarea
+                  className="sf-textarea"
+                  value={sceneText}
+                  onChange={(event) => setSceneText(event.target.value)}
+                  placeholder="Describe the next scene..."
+                />
 
-            <div className="sf-meter">
-              <div
-                className="sf-meter-fill"
-                style={{ width: `${worldPressure}%` }}
-              />
-            </div>
+                <button className="sf-primary" onClick={() => void compileScene()} disabled={compiling}>
+                  {compiling ? "Compiling..." : "Compile Scene Into Runtime"}
+                </button>
 
-            <div className="sf-pressure-value">{worldPressure}%</div>
-
-            <div className="sf-runtime-state">
-              {worldPressure > 60
-                ? "Continuity pressure escalating"
-                : "Runtime stability maintained"}
-            </div>
-          </section>
-        </div>
-
-        <div className="sf-grid">
-          <section className="sf-card">
-            <div className="sf-eyebrow">Character Memory Registry</div>
-
-            <div className="sf-stack">
-              {characters.map((char) => (
-                <div key={char.id} className="sf-character">
-                  <div className="sf-row">
-                    <strong>{char.name}</strong>
-                    <span>{char.continuity}% continuity</span>
-                  </div>
-
-                  <p>Emotion: {char.emotionalState}</p>
-                  <p>Injury: {char.injury}</p>
+                <div className="sf-muted">
+                  This writes a scene, mutates world and character state, creates a continuity diff,
+                  appends lineage, and queues a render job.
                 </div>
-              ))}
-            </div>
-          </section>
+              </section>
 
-          <section className="sf-card">
-            <div className="sf-eyebrow">Render Queue</div>
-
-            <div className="sf-stack">
-              {renderQueue.map((item) => (
-                <div key={item.id} className="sf-render">
-                  <div className="sf-row">
-                    <strong>{item.scene}</strong>
-                    <span>{item.timestamp}</span>
-                  </div>
-
-                  <div className="sf-chip-wrap">
-                    <div className="sf-chip">{item.status}</div>
-                    <div className="sf-chip blue">{item.branch}</div>
-                  </div>
+              <section className="sf-card">
+                <div className="sf-eyebrow">World State</div>
+                <h2>{runtime.world.name}</h2>
+                <div className="sf-meter">
+                  <div className="sf-meter-fill" style={{ width: `${runtime.world.pressure}%` }} />
                 </div>
-              ))}
+                <div className="sf-big">{runtime.world.pressure}%</div>
+                <pre className="sf-code">{JSON.stringify(worldState, null, 2)}</pre>
+              </section>
             </div>
-          </section>
-        </div>
+
+            <div className="sf-grid">
+              <section className="sf-card">
+                <div className="sf-eyebrow">Character Runtime Memory</div>
+                <div className="sf-stack">
+                  {runtime.characters.map((character) => (
+                    <div className="sf-row-card" key={character.id}>
+                      <div className="sf-row">
+                        <strong>{character.name}</strong>
+                        <span>{character.continuity_score}% continuity</span>
+                      </div>
+                      <div className="sf-muted">{character.role}</div>
+                      <pre className="sf-code small">{JSON.stringify(character.state, null, 2)}</pre>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="sf-card">
+                <div className="sf-eyebrow">Latest Continuity Diff</div>
+                {latestDiff ? (
+                  <>
+                    <div className="sf-chip-wrap">
+                      {latestDiff.preserved.map((item) => (
+                        <span className="sf-chip green" key={item}>{item}</span>
+                      ))}
+                      {latestDiff.mutated.map((item) => (
+                        <span className="sf-chip blue" key={item}>{item}</span>
+                      ))}
+                      {latestDiff.violations.map((item) => (
+                        <span className="sf-chip red" key={item}>{item}</span>
+                      ))}
+                    </div>
+                    <pre className="sf-code">{JSON.stringify(latestDiff.after_state, null, 2)}</pre>
+                  </>
+                ) : (
+                  <p className="sf-muted">No continuity diff has been created yet.</p>
+                )}
+              </section>
+            </div>
+
+            <div className="sf-grid">
+              <section className="sf-card">
+                <div className="sf-eyebrow">Render Jobs</div>
+                <div className="sf-stack">
+                  {runtime.renderJobs.map((job) => (
+                    <div className="sf-row-card" key={job.id}>
+                      <div className="sf-row">
+                        <strong>{job.status}</strong>
+                        <span>{new Date(job.created_at).toLocaleString()}</span>
+                      </div>
+                      <p>{job.prompt}</p>
+                    </div>
+                  ))}
+                  {runtime.renderJobs.length === 0 ? <p className="sf-muted">No render jobs yet.</p> : null}
+                </div>
+              </section>
+
+              <section className="sf-card">
+                <div className="sf-eyebrow">Lineage Events</div>
+                <div className="sf-stack">
+                  {runtime.lineageEvents.map((event) => (
+                    <div className="sf-row-card" key={event.id}>
+                      <div className="sf-row">
+                        <strong>{event.event_type}</strong>
+                        <span>{new Date(event.created_at).toLocaleString()}</span>
+                      </div>
+                      <p>{event.summary}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <section className="sf-card">
+              <div className="sf-eyebrow">Latest Render Packet</div>
+              {latestJob ? (
+                <pre className="sf-code">{JSON.stringify(latestJob.packet, null, 2)}</pre>
+              ) : (
+                <p className="sf-muted">No packet queued yet.</p>
+              )}
+            </section>
+          </>
+        ) : null}
       </section>
     </main>
   );
