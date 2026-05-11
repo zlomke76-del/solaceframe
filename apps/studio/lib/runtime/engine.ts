@@ -4,7 +4,9 @@ import type {
   RuntimeCausalEvent,
   RuntimeCharacter,
   RuntimeContradiction,
-  RuntimeWorld
+  RuntimeWorld,
+  CausalReversibility,
+  RuntimeAdmissibilityReport
 } from "./types";
 
 export type CausalDraft = {
@@ -14,6 +16,8 @@ export type CausalDraft = {
   predicate: string;
   object_ref: string | null;
   severity: number;
+  parent_event_id?: string | null;
+  reversibility: CausalReversibility;
   payload: Record<string, unknown>;
 };
 
@@ -69,6 +73,7 @@ export function analyzeScene(
       predicate: "persists-through-scene",
       object_ref: "scene",
       severity: 2,
+      reversibility: "reversible",
       payload: { source: "keyword:courier/case" }
     });
   }
@@ -87,6 +92,7 @@ export function analyzeScene(
       predicate: "damaged",
       object_ref: "world",
       severity: lower.includes("destroy") ? 8 : 6,
+      reversibility: lower.includes("destroy") ? "irreversible" : "repairable",
       payload: { source: "scene damage/collapse/destroy term" }
     });
   }
@@ -101,6 +107,7 @@ export function analyzeScene(
       predicate: "injured",
       object_ref: "left arm",
       severity: 5,
+      reversibility: "repairable",
       payload: { source: "keyword:injury/arm" }
     });
   }
@@ -115,6 +122,7 @@ export function analyzeScene(
       predicate: "trust-degraded",
       object_ref: "Ren Kaito",
       severity: 6,
+      reversibility: "repairable",
       payload: { source: "relationship keyword" }
     });
   }
@@ -128,6 +136,7 @@ export function analyzeScene(
       predicate: "weather-pressure-increased",
       object_ref: "weather",
       severity: 4,
+      reversibility: "reversible",
       payload: { source: "weather keyword" }
     });
   }
@@ -367,4 +376,79 @@ function makeSceneTitle(sceneText: string) {
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
+}
+
+
+export function evaluateRuntimeAdmissibility(input: {
+  world: RuntimeWorld;
+  activeBranch: { divergence_score: number };
+  causalEvents: RuntimeCausalEvent[];
+  contradictions: RuntimeContradiction[];
+}): RuntimeAdmissibilityReport {
+  const unresolvedContradictions = input.contradictions.filter((item) => !item.resolved);
+  const irreversibleOpenEvents = input.causalEvents.filter(
+    (event) => event.reversibility === "irreversible" && !event.repaired
+  );
+
+  const worldPressure = clampNumber(input.world.pressure, 0, 100);
+  const branchDivergence = clampNumber(input.activeBranch.divergence_score, 0, 100);
+  const contradictionLoad = Math.min(40, unresolvedContradictions.length * 12);
+  const irreversibleLoad = Math.min(30, irreversibleOpenEvents.length * 15);
+  const pressureLoad = worldPressure * 0.22;
+  const divergenceLoad = branchDivergence * 0.18;
+  const survivability = Math.max(0, Math.round(100 - contradictionLoad - irreversibleLoad - pressureLoad - divergenceLoad));
+
+  const reasons: string[] = [];
+  const requiredRepairs: string[] = [];
+
+  if (unresolvedContradictions.length > 0) {
+    reasons.push(`${unresolvedContradictions.length} unresolved contradiction(s) remain open`);
+    requiredRepairs.push("Resolve or fork around unresolved contradiction state before clean execution");
+  }
+
+  if (irreversibleOpenEvents.length > 0) {
+    reasons.push(`${irreversibleOpenEvents.length} irreversible causal event(s) remain unrepaired`);
+    requiredRepairs.push("Attach repair lineage or move execution into a governed branch");
+  }
+
+  if (worldPressure >= 72) {
+    reasons.push("World pressure has crossed the high-risk threshold");
+    requiredRepairs.push("Reduce unresolved world tension before allowing normal render execution");
+  }
+
+  if (branchDivergence >= 68) {
+    reasons.push("Branch divergence is approaching continuity fracture");
+    requiredRepairs.push("Fork, repair, or reconcile branch state before continuing");
+  }
+
+  let decision: RuntimeAdmissibilityReport["decision"] = "allow";
+
+  if (survivability < 45 || unresolvedContradictions.some((item) => item.severity === "high")) {
+    decision = "blocked";
+  } else if (survivability < 74 || unresolvedContradictions.length > 0 || irreversibleOpenEvents.length > 0) {
+    decision = "conditional";
+  }
+
+  if (reasons.length === 0) {
+    reasons.push("Runtime state remains inside admissible continuity bounds");
+  }
+
+  return {
+    decision,
+    score: survivability,
+    factors: {
+      unresolvedContradictions: unresolvedContradictions.length,
+      irreversibleOpenEvents: irreversibleOpenEvents.length,
+      branchDivergence,
+      worldPressure,
+      survivability
+    },
+    reasons,
+    requiredRepairs
+  };
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
