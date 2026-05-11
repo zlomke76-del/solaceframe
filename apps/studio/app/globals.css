@@ -145,7 +145,7 @@ button {
 
 .sf-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+  grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
   gap: 22px;
   align-items: start;
 }
@@ -173,7 +173,7 @@ button {
 
 .sf-textarea {
   width: 100%;
-  min-height: 132px;
+  min-height: 134px;
   resize: vertical;
   margin-top: 16px;
   padding: 18px;
@@ -253,24 +253,51 @@ button {
   font-size: 13px;
 }
 
-.sf-impact-grid {
+.sf-side-stack,
+.sf-lower-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 18px;
+  gap: 22px;
 }
 
-.sf-mini-card {
-  min-height: 148px;
-  padding: 16px;
-  border-radius: 22px;
-  background: rgba(0,0,0,0.22);
-  border: 1px solid rgba(255,255,255,0.075);
+.sf-lower-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: 22px;
+}
+
+.sf-world-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 0;
+  color: rgba(255,255,255,0.7);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.sf-world-row strong {
+  color: white;
+}
+
+.sf-bar {
+  height: 8px;
+  margin: 16px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+}
+
+.sf-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4ade80, #facc15);
+}
+
+.sf-chip-cloud {
+  margin-top: 14px;
 }
 
 .sf-chip {
   display: inline-block;
-  margin: 10px 8px 0 0;
+  margin: 8px 8px 0 0;
   padding: 8px 10px;
   border-radius: 999px;
   color: rgba(255,255,255,0.82);
@@ -279,13 +306,20 @@ button {
   font-size: 12px;
 }
 
-.sf-side-stack {
-  display: grid;
-  gap: 22px;
+.sf-chip.danger {
+  color: #fecaca;
+  background: rgba(239,68,68,0.1);
+  border-color: rgba(239,68,68,0.2);
+}
+
+.sf-chip.warn {
+  color: #fde68a;
+  background: rgba(250,204,21,0.1);
+  border-color: rgba(250,204,21,0.2);
 }
 
 .sf-code {
-  max-height: 448px;
+  max-height: 390px;
   overflow: auto;
   margin: 16px 0 0;
   padding: 18px;
@@ -297,51 +331,51 @@ button {
   line-height: 1.55;
 }
 
-.sf-scene-stack {
+.sf-character-grid {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
-}
-
-.sf-scene-row {
-  display: grid;
-  grid-template-columns: 120px 1fr auto;
-  gap: 18px;
-  align-items: center;
-  padding: 16px;
-  border-radius: 20px;
-  background: rgba(0,0,0,0.22);
-  border: 1px solid rgba(255,255,255,0.07);
-}
-
-.sf-scene-row.compact {
-  grid-template-columns: 1fr auto auto;
-}
-
-.sf-tag {
-  border-radius: 999px;
-  padding: 7px 10px;
-  font-size: 12px;
-  text-transform: capitalize;
-  color: #bbf7d0;
-  background: rgba(34, 197, 94, 0.12);
-  border: 1px solid rgba(34, 197, 94, 0.2);
-}
-
-.sf-timeline {
-  margin-top: 22px;
-}
-
-.sf-timeline-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-top: 18px;
 }
 
+.sf-character-card {
+  padding: 18px;
+  border-radius: 24px;
+  background: rgba(0,0,0,0.23);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.sf-character-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.sf-character-top h3 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.sf-character-top p {
+  margin: 0;
+  color: rgba(255,255,255,0.58);
+}
+
+.sf-character-top strong {
+  font-size: 24px;
+}
+
+.sf-timeline-grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  max-height: 430px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .sf-timeline-card {
   text-align: left;
-  min-height: 178px;
   padding: 18px;
   border-radius: 22px;
   color: white;
@@ -361,7 +395,8 @@ button {
   color: rgba(255,255,255,0.8);
 }
 
-.sf-timeline-card p {
+.sf-timeline-card p,
+.sf-selected p {
   color: rgba(255,255,255,0.68);
   line-height: 1.5;
 }
@@ -381,6 +416,14 @@ button {
   text-transform: capitalize;
 }
 
+.sf-selected {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(0,0,0,0.22);
+  border: 1px solid rgba(255,255,255,0.07);
+}
+
 @media (max-width: 1180px) {
   .sf-shell {
     grid-template-columns: 1fr;
@@ -390,12 +433,9 @@ button {
     display: none;
   }
 
-  .sf-grid {
+  .sf-grid,
+  .sf-lower-grid {
     grid-template-columns: 1fr;
-  }
-
-  .sf-timeline-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -415,13 +455,7 @@ button {
   }
 
   .sf-metrics,
-  .sf-impact-grid,
-  .sf-timeline-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .sf-scene-row,
-  .sf-scene-row.compact {
+  .sf-character-grid {
     grid-template-columns: 1fr;
   }
 
