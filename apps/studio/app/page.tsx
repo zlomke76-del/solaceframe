@@ -287,7 +287,7 @@ export default function Page() {
 
             <section className="sf-card sf-card-pad">
               <div className="sf-eyebrow">Selected Scene State</div>
-              <h3 className="sf-card-title sf-small-title">{selectedEvent.title ?? selectedEvent.id}</h3>
+              <h3 className="sf-card-title sf-small-title">{selectedEvent.id}</h3>
               <p className="sf-muted">{selectedEvent.text}</p>
 
               <div className="sf-scene-stack">
