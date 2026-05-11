@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SolaceFrame",
-  description: "Working continuity-governed synthetic media prototype."
+  title: "SolaceFrame V11",
+  description: "Governed synthetic runtime infrastructure."
 };
 
 export default function RootLayout({
