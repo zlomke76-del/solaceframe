@@ -1,5 +1,6 @@
 export type Admissibility = "allow" | "conditional" | "blocked";
 export type DriftRisk = "low" | "medium" | "high";
+export type CausalReversibility = "reversible" | "repairable" | "irreversible";
 
 export type RuntimeProject = {
   id: string;
@@ -23,6 +24,9 @@ export type RuntimeBranch = {
   name: string;
   divergence_score: number;
   status: string;
+  snapshot?: Record<string, unknown> | null;
+  fork_reason?: string | null;
+  created_at?: string;
 };
 
 export type RuntimeCharacter = {
@@ -89,12 +93,16 @@ export type RuntimeCausalEvent = {
   project_id: string;
   branch_id: string | null;
   scene_id: string | null;
+  parent_event_id?: string | null;
+  repair_event_id?: string | null;
   event_key: string;
   event_type: string;
   subject: string;
   predicate: string;
   object_ref: string | null;
   severity: number;
+  reversibility?: CausalReversibility | null;
+  repaired?: boolean | null;
   payload: Record<string, unknown>;
   created_at: string;
 };
@@ -108,14 +116,32 @@ export type RuntimeContradiction = {
   summary: string;
   severity: string;
   resolved: boolean;
+  resolved_at?: string | null;
+  repair_causal_event_id?: string | null;
+  repair_note?: string | null;
   payload: Record<string, unknown>;
   created_at: string;
+};
+
+export type RuntimeAdmissibilityReport = {
+  decision: Admissibility;
+  score: number;
+  factors: {
+    unresolvedContradictions: number;
+    irreversibleOpenEvents: number;
+    branchDivergence: number;
+    worldPressure: number;
+    survivability: number;
+  };
+  reasons: string[];
+  requiredRepairs: string[];
 };
 
 export type RuntimeState = {
   project: RuntimeProject;
   world: RuntimeWorld;
   activeBranch: RuntimeBranch;
+  branches: RuntimeBranch[];
   characters: RuntimeCharacter[];
   scenes: RuntimeScene[];
   renderJobs: RuntimeRenderJob[];
@@ -123,4 +149,5 @@ export type RuntimeState = {
   continuityDiffs: RuntimeContinuityDiff[];
   causalEvents: RuntimeCausalEvent[];
   contradictions: RuntimeContradiction[];
+  admissibilityReport: RuntimeAdmissibilityReport;
 };
