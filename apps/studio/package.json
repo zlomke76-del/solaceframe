@@ -1,12 +1,11 @@
 {
-  "name": "solaceframe",
+  "name": "solaceframe-studio",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "yarn@1.22.19",
   "scripts": {
-    "dev": "next dev apps/studio",
-    "build": "next build apps/studio",
-    "start": "next start apps/studio"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
   "dependencies": {
     "next": "14.2.32",
