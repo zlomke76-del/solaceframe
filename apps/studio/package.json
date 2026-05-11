@@ -1,18 +1,20 @@
 {
-  "name": "solaceframe-studio",
+  "name": "solaceframe",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "yarn@1.22.19",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "workers/*"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
-  "dependencies": {
-    "next": "14.2.32",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint"
   },
   "devDependencies": {
+    "turbo": "^2.0.0",
     "typescript": "^5.4.5"
   }
 }
