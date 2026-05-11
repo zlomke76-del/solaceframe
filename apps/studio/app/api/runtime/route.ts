@@ -6,6 +6,66 @@ import type { RuntimeCharacter, RuntimeWorld } from "@/lib/runtime/types";
 
 export const dynamic = "force-dynamic";
 
+type RuntimeErrorPayload = {
+  message: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+  raw?: unknown;
+};
+
+function normalizeRuntimeError(error: unknown): RuntimeErrorPayload {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      raw: {
+        name: error.name,
+        stack: error.stack
+      }
+    };
+  }
+
+  if (typeof error === "object" && error !== null) {
+    const record = error as Record<string, unknown>;
+
+    return {
+      message:
+        typeof record.message === "string"
+          ? record.message
+          : typeof record.error === "string"
+          ? record.error
+          : "Non-Error runtime failure",
+      code: typeof record.code === "string" ? record.code : undefined,
+      details: typeof record.details === "string" ? record.details : undefined,
+      hint: typeof record.hint === "string" ? record.hint : undefined,
+      raw: record
+    };
+  }
+
+  return {
+    message: String(error || "Unknown runtime error"),
+    raw: error
+  };
+}
+
+function jsonError(error: unknown, status = 500) {
+  const normalized = normalizeRuntimeError(error);
+
+  console.error("SolaceFrame runtime error:", normalized);
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: normalized.message,
+      code: normalized.code,
+      details: normalized.details,
+      hint: normalized.hint,
+      raw: normalized.raw
+    },
+    { status }
+  );
+}
+
 export async function GET() {
   try {
     const projectId = await ensureSeedRuntime();
@@ -16,13 +76,7 @@ export async function GET() {
       state
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown runtime error"
-      },
-      { status: 500 }
-    );
+    return jsonError(error);
   }
 }
 
@@ -150,13 +204,7 @@ export async function POST(request: Request) {
       state: nextState
     });
   } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown runtime mutation error"
-      },
-      { status: 500 }
-    );
+    return jsonError(error);
   }
 }
 
@@ -170,6 +218,7 @@ async function loadRuntimeState(projectId: string) {
     .single();
 
   if (projectError) throw projectError;
+  if (!project) throw new Error("Runtime project not found after seed.");
 
   const { data: world, error: worldError } = await supabase
     .from("worlds")
@@ -177,42 +226,97 @@ async function loadRuntimeState(projectId: string) {
     .eq("project_id", projectId)
     .order("created_at", { ascending: true })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   if (worldError) throw worldError;
+  if (!world) throw new Error("Runtime world missing after seed.");
+
+  let activeBranchId = project.active_branch_id as string | null;
+
+  if (!activeBranchId) {
+    const { data: fallbackBranch, error: fallbackBranchError } = await supabase
+      .from("branches")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (fallbackBranchError) throw fallbackBranchError;
+    if (!fallbackBranch) throw new Error("Runtime branch missing after seed.");
+
+    activeBranchId = fallbackBranch.id as string;
+
+    const { error: projectBranchUpdateError } = await supabase
+      .from("projects")
+      .update({ active_branch_id: activeBranchId })
+      .eq("id", projectId);
+
+    if (projectBranchUpdateError) throw projectBranchUpdateError;
+  }
 
   const { data: activeBranch, error: branchError } = await supabase
     .from("branches")
     .select("*")
-    .eq("id", project.active_branch_id)
-    .single();
+    .eq("id", activeBranchId)
+    .maybeSingle();
 
   if (branchError) throw branchError;
+  if (!activeBranch) throw new Error("Active branch not found.");
 
-  const [{ data: characters, error: charactersError }, { data: scenes, error: scenesError }, { data: renderJobs, error: jobsError }, { data: lineageEvents, error: lineageError }, { data: continuityDiffs, error: diffsError }] =
-    await Promise.all([
-      supabase.from("characters").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
-      supabase.from("scenes").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-      supabase.from("render_jobs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-      supabase.from("lineage_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-      supabase.from("continuity_diffs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20)
-    ]);
+  const [
+    charactersResult,
+    scenesResult,
+    renderJobsResult,
+    lineageEventsResult,
+    continuityDiffsResult
+  ] = await Promise.all([
+    supabase
+      .from("characters")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("scenes")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("render_jobs")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("lineage_events")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("continuity_diffs")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+  ]);
 
-  if (charactersError) throw charactersError;
-  if (scenesError) throw scenesError;
-  if (jobsError) throw jobsError;
-  if (lineageError) throw lineageError;
-  if (diffsError) throw diffsError;
+  if (charactersResult.error) throw charactersResult.error;
+  if (scenesResult.error) throw scenesResult.error;
+  if (renderJobsResult.error) throw renderJobsResult.error;
+  if (lineageEventsResult.error) throw lineageEventsResult.error;
+  if (continuityDiffsResult.error) throw continuityDiffsResult.error;
 
   return {
     project,
     world,
     activeBranch,
-    characters: (characters ?? []) as RuntimeCharacter[],
-    scenes: scenes ?? [],
-    renderJobs: renderJobs ?? [],
-    lineageEvents: lineageEvents ?? [],
-    continuityDiffs: continuityDiffs ?? []
+    characters: (charactersResult.data ?? []) as RuntimeCharacter[],
+    scenes: scenesResult.data ?? [],
+    renderJobs: renderJobsResult.data ?? [],
+    lineageEvents: lineageEventsResult.data ?? [],
+    continuityDiffs: continuityDiffsResult.data ?? []
   };
 }
 
@@ -222,5 +326,5 @@ function buildCanonicalPrompt(sceneText: string, packet: Record<string, unknown>
     `Scene: ${sceneText}`,
     "Preserve all continuity constraints in the packet.",
     `Packet: ${JSON.stringify(packet)}`
-  ].join("\n");
+  ].join("\\n");
 }
