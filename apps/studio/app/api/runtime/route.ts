@@ -1,33 +1,23 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { ensureSeedRuntime } from "@/lib/runtime/seed";
-import { analyzeScene, mutateCharacters, mutateWorld } from "@/lib/runtime/engine";
-import type { RuntimeCharacter, RuntimeWorld } from "@/lib/runtime/types";
+import { analyzeScene, computeBranchDelta, mutateCharacters, mutateWorld } from "@/lib/runtime/engine";
+import type {
+  RuntimeCausalEvent,
+  RuntimeCharacter,
+  RuntimeContradiction,
+  RuntimeWorld
+} from "@/lib/runtime/types";
 
 export const dynamic = "force-dynamic";
 
-type RuntimeErrorPayload = {
-  message: string;
-  code?: string;
-  details?: string;
-  hint?: string;
-  raw?: unknown;
-};
-
-function normalizeRuntimeError(error: unknown): RuntimeErrorPayload {
+function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
-    return {
-      message: error.message,
-      raw: {
-        name: error.name,
-        stack: error.stack
-      }
-    };
+    return { message: error.message, raw: { name: error.name, stack: error.stack } };
   }
 
   if (typeof error === "object" && error !== null) {
     const record = error as Record<string, unknown>;
-
     return {
       message:
         typeof record.message === "string"
@@ -42,39 +32,20 @@ function normalizeRuntimeError(error: unknown): RuntimeErrorPayload {
     };
   }
 
-  return {
-    message: String(error || "Unknown runtime error"),
-    raw: error
-  };
+  return { message: String(error || "Unknown runtime error"), raw: error };
 }
 
 function jsonError(error: unknown, status = 500) {
   const normalized = normalizeRuntimeError(error);
-
   console.error("SolaceFrame runtime error:", normalized);
-
-  return NextResponse.json(
-    {
-      ok: false,
-      error: normalized.message,
-      code: normalized.code,
-      details: normalized.details,
-      hint: normalized.hint,
-      raw: normalized.raw
-    },
-    { status }
-  );
+  return NextResponse.json({ ok: false, ...normalized }, { status });
 }
 
 export async function GET() {
   try {
     const projectId = await ensureSeedRuntime();
     const state = await loadRuntimeState(projectId);
-
-    return NextResponse.json({
-      ok: true,
-      state
-    });
+    return NextResponse.json({ ok: true, state });
   } catch (error) {
     return jsonError(error);
   }
@@ -86,24 +57,32 @@ export async function POST(request: Request) {
     const sceneText = String(body.sceneText || "").trim();
 
     if (!sceneText) {
-      return NextResponse.json(
-        { ok: false, error: "sceneText is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "sceneText is required" }, { status: 400 });
     }
 
     const projectId = await ensureSeedRuntime();
     const supabase = getSupabaseAdmin().schema("solaceframe");
     const state = await loadRuntimeState(projectId);
 
-    const analysis = analyzeScene(sceneText, state.world, state.characters);
+    const unresolvedContradictions = state.contradictions.filter((item) => !item.resolved);
+    const analysis = analyzeScene(
+      sceneText,
+      state.world,
+      state.characters,
+      state.causalEvents,
+      unresolvedContradictions
+    );
+
     const beforeState = {
       world: state.world,
-      characters: state.characters
+      characters: state.characters,
+      causalEvents: state.causalEvents.slice(0, 20),
+      unresolvedContradictions
     };
 
     const nextWorld = mutateWorld(state.world, analysis);
     const nextCharacters = mutateCharacters(state.characters, sceneText, analysis);
+    const branchDelta = computeBranchDelta(analysis);
 
     const { data: scene, error: sceneError } = await supabase
       .from("scenes")
@@ -120,6 +99,46 @@ export async function POST(request: Request) {
       .single();
 
     if (sceneError) throw sceneError;
+
+    if (analysis.causalEvents.length > 0) {
+      const { error: causalError } = await supabase
+        .from("causal_events")
+        .insert(
+          analysis.causalEvents.map((event) => ({
+            project_id: projectId,
+            branch_id: state.activeBranch.id,
+            scene_id: scene.id,
+            event_key: event.event_key,
+            event_type: event.event_type,
+            subject: event.subject,
+            predicate: event.predicate,
+            object_ref: event.object_ref,
+            severity: event.severity,
+            payload: event.payload
+          }))
+        );
+
+      if (causalError) throw causalError;
+    }
+
+    if (analysis.contradictions.length > 0) {
+      const { error: contradictionError } = await supabase
+        .from("contradictions")
+        .insert(
+          analysis.contradictions.map((contradiction) => ({
+            project_id: projectId,
+            branch_id: state.activeBranch.id,
+            scene_id: scene.id,
+            contradiction_type: contradiction.contradiction_type,
+            summary: contradiction.summary,
+            severity: contradiction.severity,
+            resolved: false,
+            payload: contradiction.payload
+          }))
+        );
+
+      if (contradictionError) throw contradictionError;
+    }
 
     const { error: worldError } = await supabase
       .from("worlds")
@@ -144,6 +163,21 @@ export async function POST(request: Request) {
       if (characterError) throw characterError;
     }
 
+    const nextDivergence = Math.min(
+      100,
+      state.activeBranch.divergence_score + branchDelta.divergenceDelta
+    );
+
+    const { error: branchError } = await supabase
+      .from("branches")
+      .update({
+        divergence_score: nextDivergence,
+        status: analysis.admissibility === "blocked" ? "blocked-review" : state.activeBranch.status
+      })
+      .eq("id", state.activeBranch.id);
+
+    if (branchError) throw branchError;
+
     const { data: renderJob, error: renderError } = await supabase
       .from("render_jobs")
       .insert({
@@ -162,7 +196,13 @@ export async function POST(request: Request) {
 
     const afterState = {
       world: nextWorld,
-      characters: nextCharacters
+      characters: nextCharacters,
+      causalEvents: analysis.causalEvents,
+      contradictions: analysis.contradictions,
+      branch: {
+        ...state.activeBranch,
+        divergence_score: nextDivergence
+      }
     };
 
     const { error: diffError } = await supabase
@@ -185,24 +225,22 @@ export async function POST(request: Request) {
         project_id: projectId,
         scene_id: scene.id,
         render_job_id: renderJob.id,
-        event_type: "scene-compiled",
-        summary: `Scene compiled: ${analysis.title}`,
+        event_type: "causal-scene-compiled",
+        summary: `Causal scene compiled: ${analysis.title}`,
         payload: {
           admissibility: analysis.admissibility,
           driftRisk: analysis.driftRisk,
-          renderJobId: renderJob.id
+          renderJobId: renderJob.id,
+          causalEvents: analysis.causalEvents,
+          contradictions: analysis.contradictions,
+          renderConstraints: analysis.renderConstraints
         }
       });
 
     if (lineageError) throw lineageError;
 
     const nextState = await loadRuntimeState(projectId);
-
-    return NextResponse.json({
-      ok: true,
-      analysis,
-      state: nextState
-    });
+    return NextResponse.json({ ok: true, analysis, state: nextState });
   } catch (error) {
     return jsonError(error);
   }
@@ -269,37 +307,17 @@ async function loadRuntimeState(projectId: string) {
     scenesResult,
     renderJobsResult,
     lineageEventsResult,
-    continuityDiffsResult
+    continuityDiffsResult,
+    causalEventsResult,
+    contradictionsResult
   ] = await Promise.all([
-    supabase
-      .from("characters")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("scenes")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(20),
-    supabase
-      .from("render_jobs")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(20),
-    supabase
-      .from("lineage_events")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(20),
-    supabase
-      .from("continuity_diffs")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(20)
+    supabase.from("characters").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
+    supabase.from("scenes").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("render_jobs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("lineage_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("continuity_diffs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("causal_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(40),
+    supabase.from("contradictions").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(40)
   ]);
 
   if (charactersResult.error) throw charactersResult.error;
@@ -307,6 +325,8 @@ async function loadRuntimeState(projectId: string) {
   if (renderJobsResult.error) throw renderJobsResult.error;
   if (lineageEventsResult.error) throw lineageEventsResult.error;
   if (continuityDiffsResult.error) throw continuityDiffsResult.error;
+  if (causalEventsResult.error) throw causalEventsResult.error;
+  if (contradictionsResult.error) throw contradictionsResult.error;
 
   return {
     project,
@@ -316,7 +336,9 @@ async function loadRuntimeState(projectId: string) {
     scenes: scenesResult.data ?? [],
     renderJobs: renderJobsResult.data ?? [],
     lineageEvents: lineageEventsResult.data ?? [],
-    continuityDiffs: continuityDiffsResult.data ?? []
+    continuityDiffs: continuityDiffsResult.data ?? [],
+    causalEvents: (causalEventsResult.data ?? []) as RuntimeCausalEvent[],
+    contradictions: (contradictionsResult.data ?? []) as RuntimeContradiction[]
   };
 }
 
@@ -324,7 +346,7 @@ function buildCanonicalPrompt(sceneText: string, packet: Record<string, unknown>
   return [
     "Governed synthetic media render.",
     `Scene: ${sceneText}`,
-    "Preserve all continuity constraints in the packet.",
+    "The render must obey causal constraints, continuity diffs, persistent object lineage, and unresolved contradictions.",
     `Packet: ${JSON.stringify(packet)}`
-  ].join("\\n");
+  ].join("\n");
 }
