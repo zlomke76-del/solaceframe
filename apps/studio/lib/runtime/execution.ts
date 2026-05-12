@@ -358,7 +358,7 @@ async function executeVercelGatewayVideoRender(
       duration,
       aspectRatio,
       resolution,
-      providerOptions: buildVideoProviderOptions(model),
+      providerOptions: buildVideoProviderOptions(model) as any,
     })) as unknown;
 
     const result = coerceRecord(rawResult, "Vercel AI Gateway video generation returned a non-object result.");
