@@ -323,23 +323,41 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const execution = await executeRenderRequest({ job, outputKind, state });
   const completedAt = new Date().toISOString();
 
-  const { data: artifact, error: artifactError } = await supabase
+  const artifactPayload = {
+    project_id: projectId,
+    scene_id: job.scene_id,
+    render_job_id: job.id,
+    branch_id: job.branch_id,
+    artifact_type: execution.artifactType,
+    storage_path: null,
+    public_url: execution.artifactUrl,
+    mime_type: execution.mimeType,
+    metadata: execution.metadata
+  };
+
+  let { data: artifact, error: artifactError } = await supabase
     .from("artifacts")
-    .insert({
-      project_id: projectId,
-      scene_id: job.scene_id,
-      render_job_id: job.id,
-      branch_id: job.branch_id,
-      artifact_type: execution.artifactType,
-      storage_path: null,
-      public_url: execution.artifactUrl,
-      mime_type: execution.mimeType,
-      metadata: execution.metadata
-    })
+    .insert(artifactPayload)
     .select("*")
     .single();
 
+  // Some deployed Supabase instances may still have a stale PostgREST schema cache
+  // immediately after the V15 migration. Keep execution available by retrying
+  // without branch_id; the migration below backfills the column and refreshes cache.
+  if (artifactError?.code === "PGRST204" && artifactError.message?.includes("branch_id")) {
+    const { branch_id: _branchId, ...artifactPayloadWithoutBranch } = artifactPayload;
+    const fallbackResult = await supabase
+      .from("artifacts")
+      .insert(artifactPayloadWithoutBranch)
+      .select("*")
+      .single();
+
+    artifact = fallbackResult.data;
+    artifactError = fallbackResult.error;
+  }
+
   if (artifactError) throw artifactError;
+  if (!artifact) throw new Error("Artifact execution completed but no artifact row was returned.");
 
   const { error: jobError } = await supabase
     .from("render_jobs")
