@@ -23,7 +23,8 @@ type RuntimeAction =
   | "compile_scene"
   | "fork_branch"
   | "resolve_contradiction"
-  | "execute_render_job";
+  | "execute_render_job"
+  | "set_continuity_anchor";
 
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
@@ -83,6 +84,10 @@ export async function POST(request: Request) {
 
     if (action === "execute_render_job") {
       return await executeRenderJob(body);
+    }
+
+    if (action === "set_continuity_anchor") {
+      return await setContinuityAnchor(body);
     }
 
     return await compileScene(body);
@@ -458,6 +463,17 @@ async function executeRenderJob(body: Record<string, unknown>) {
           finalMimeType: persistedMedia.mimeType,
           finalStatus: execution.status,
         },
+        v19: {
+          ...(typeof execution.metadata?.v19 === "object" && execution.metadata.v19 !== null
+            ? (execution.metadata.v19 as Record<string, unknown>)
+            : {}),
+          continuityLockEvaluated: true,
+          canPromoteToAnchor:
+            execution.status === "completed" &&
+            Boolean(persistedMedia.publicUrl) &&
+            Boolean(persistedMedia.mimeType?.startsWith("image/") || persistedMedia.mimeType?.startsWith("video/")),
+          promotedByDefault: false,
+        },
       },
     })
     .select("*")
@@ -529,6 +545,110 @@ async function executeRenderJob(body: Record<string, unknown>) {
     artifact,
     state: nextState,
   });
+}
+
+
+async function setContinuityAnchor(body: Record<string, unknown>) {
+  const artifactId = String(body.artifactId || "").trim();
+
+  if (!artifactId) {
+    return NextResponse.json(
+      { ok: false, error: "artifactId is required" },
+      { status: 400 },
+    );
+  }
+
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+  const selected = state.artifacts.find((artifact) => artifact.id === artifactId);
+
+  if (!selected) {
+    return NextResponse.json(
+      { ok: false, error: "Artifact not found in active runtime" },
+      { status: 404 },
+    );
+  }
+
+  if (!selected.public_url || !(selected.mime_type?.startsWith("image/") || selected.mime_type?.startsWith("video/"))) {
+    return NextResponse.json(
+      { ok: false, error: "Only public image/video artifacts can become continuity anchors" },
+      { status: 409 },
+    );
+  }
+
+  for (const artifact of state.artifacts) {
+    const previousMetadata = artifact.metadata ?? {};
+    const previousV19 =
+      typeof previousMetadata.v19 === "object" && previousMetadata.v19 !== null
+        ? (previousMetadata.v19 as Record<string, unknown>)
+        : {};
+
+    const nextMetadata = {
+      ...previousMetadata,
+      v19: {
+        ...previousV19,
+        continuityAnchor: artifact.id === selected.id,
+        anchorSupersededAt:
+          artifact.id === selected.id ? null : new Date().toISOString(),
+      },
+    };
+
+    const { error } = await supabase
+      .from("artifacts")
+      .update({ metadata: nextMetadata })
+      .eq("id", artifact.id);
+
+    if (error) throw error;
+  }
+
+  const selectedMetadata = selected.metadata ?? {};
+  const selectedV19 =
+    typeof selectedMetadata.v19 === "object" && selectedMetadata.v19 !== null
+      ? (selectedMetadata.v19 as Record<string, unknown>)
+      : {};
+
+  const lockedAt = new Date().toISOString();
+  const { error: selectedError } = await supabase
+    .from("artifacts")
+    .update({
+      metadata: {
+        ...selectedMetadata,
+        v19: {
+          ...selectedV19,
+          continuityAnchor: true,
+          lockStatus: "operator-approved",
+          lockedAt,
+          lockReason:
+            String(body.reason || "Operator promoted artifact as the visual continuity anchor.").trim(),
+          anchorPublicUrl: selected.public_url,
+          anchorMimeType: selected.mime_type,
+        },
+      },
+    })
+    .eq("id", selected.id);
+
+  if (selectedError) throw selectedError;
+
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: selected.scene_id,
+    render_job_id: selected.render_job_id,
+    event_type: "continuity-anchor-set",
+    summary: `Artifact promoted to visual continuity anchor: ${selected.artifact_type}`,
+    payload: {
+      artifactId: selected.id,
+      artifactType: selected.artifact_type,
+      mimeType: selected.mime_type,
+      publicUrl: selected.public_url,
+      lockedAt,
+    },
+  });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, artifactId: selected.id, state: nextState });
 }
 
 function resolveExecutionMode(outputKind: "image" | "video" | "storyboard") {
