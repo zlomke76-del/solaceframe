@@ -17,6 +17,7 @@ import type {
 } from "@/lib/runtime/types";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 type RuntimeAction = "compile_scene" | "fork_branch" | "resolve_contradiction" | "execute_render_job";
 
@@ -343,13 +344,14 @@ async function executeRenderJob(body: Record<string, unknown>) {
       mime_type: persistedMedia.mimeType,
       metadata: {
         ...execution.metadata,
-        v17: {
+        v18: {
           storageBacked: Boolean(persistedMedia.storagePath),
           originalDelivery: persistedMedia.originalDelivery,
           bucket: persistedMedia.bucket,
           storagePath: persistedMedia.storagePath,
           byteLength: persistedMedia.byteLength,
-          persistedAt: persistedMedia.persistedAt
+          persistedAt: persistedMedia.persistedAt,
+          videoProviderEnabled: outputKind === "video" && execution.provider === "vercel-ai-gateway-video"
         }
       }
     })
@@ -404,9 +406,8 @@ async function executeRenderJob(body: Record<string, unknown>) {
 function resolveExecutionMode(outputKind: "image" | "video" | "storyboard") {
   if (process.env.SOLACEFRAME_RENDER_WEBHOOK_URL) return "external-webhook";
   if (process.env.SOLACEFRAME_FORCE_PLACEHOLDER_RENDER === "true") return "local-placeholder";
-  if (outputKind === "video") return "local-placeholder";
   if (process.env.VERCEL_AI_GATEWAY_API_KEY || process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN) {
-    return "vercel-ai-gateway";
+    return outputKind === "video" ? "vercel-ai-gateway-video" : "vercel-ai-gateway";
   }
   return "local-placeholder";
 }
