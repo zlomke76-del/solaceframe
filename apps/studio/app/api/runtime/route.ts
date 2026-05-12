@@ -17,6 +17,7 @@ import type {
   RuntimeContinuityDiff,
   RuntimeRenderJob,
   RuntimeScene,
+  RuntimeState,
   RuntimeWorld,
 } from "@/lib/runtime/types";
 
@@ -30,7 +31,9 @@ type RuntimeAction =
   | "execute_render_job"
   | "bootstrap_scenario"
   | "reset_world"
-  | "set_continuity_anchor";
+  | "set_continuity_anchor"
+  | "reconcile_video_job"
+  | "refresh_video_jobs";
 
 function sanitizeRuntimeErrorText(value: unknown) {
   const text = typeof value === "string" ? value : String(value || "Unknown runtime error");
@@ -116,6 +119,14 @@ export async function POST(request: Request) {
 
     if (action === "set_continuity_anchor") {
       return await setContinuityAnchor(body);
+    }
+
+    if (action === "reconcile_video_job") {
+      return await reconcileVideoJob(body);
+    }
+
+    if (action === "refresh_video_jobs") {
+      return await refreshVideoJobs(body);
     }
 
     return await compileScene(body);
@@ -372,10 +383,40 @@ async function executeRenderJob(body: Record<string, unknown>) {
 
   const startedAt = new Date().toISOString();
 
+  if (outputKind === "video") {
+    const activeVideoStatuses = [
+      "queued",
+      "submitted",
+      "provider_accepted",
+      "generating",
+      "awaiting_media",
+      "reconciling",
+    ];
+    const activeVideoJob = state.renderJobs.find(
+      (item: RuntimeRenderJob) =>
+        item.id !== job.id &&
+        item.branch_id === job.branch_id &&
+        item.output_kind === "video" &&
+        activeVideoStatuses.includes(item.status),
+    );
+
+    if (activeVideoJob) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "An active video orchestration already exists for this branch.",
+          activeVideoJobId: activeVideoJob.id,
+          state,
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   const { error: runningError } = await supabase
     .from("render_jobs")
     .update({
-      status: "running",
+      status: outputKind === "video" ? "submitted" : "running",
       output_kind: outputKind,
       execution_mode: resolveExecutionMode(outputKind),
       started_at: startedAt,
@@ -402,14 +443,16 @@ async function executeRenderJob(body: Record<string, unknown>) {
     const { error: jobError } = await supabase
       .from("render_jobs")
       .update({
-        status: "queued",
+        status: execution.providerJobId ? "provider_accepted" : "awaiting_media",
         model_route: execution.provider,
         provider: execution.provider,
         provider_job_id: execution.providerJobId,
         output_url: null,
         artifact_id: null,
         completed_at: null,
-        progress_status: "provider-accepted-video-job-awaiting-completion",
+        progress_status: execution.providerJobId
+          ? "provider-accepted-video-job-awaiting-completion"
+          : "awaiting-provider-media-or-operation-id",
         progress_percent: 35,
         provider_payload: {
           provider: execution.provider,
@@ -436,8 +479,8 @@ async function executeRenderJob(body: Record<string, unknown>) {
       project_id: projectId,
       scene_id: job.scene_id,
       render_job_id: job.id,
-      event_type: "render-video-queued",
-      summary: `Video render job held for async provider completion: ${outputKind}`,
+      event_type: "render-video-submitted",
+      summary: `Video render job submitted for async provider completion: ${outputKind}`,
       payload: {
         renderJobId: job.id,
         artifactId: null,
@@ -707,6 +750,329 @@ async function executeRenderJob(body: Record<string, unknown>) {
     state: nextState,
   });
 
+}
+
+async function refreshVideoJobs(body: Record<string, unknown>) {
+  const projectId = await ensureSeedRuntime();
+  const state = await loadRuntimeState(projectId);
+  const activeVideoStatuses = [
+    "queued",
+    "submitted",
+    "provider_accepted",
+    "generating",
+    "awaiting_media",
+    "reconciling",
+  ];
+  const maxJobs = Math.max(1, Math.min(Number(body.limit || 3), 6));
+  const jobs = state.renderJobs
+    .filter(
+      (job: RuntimeRenderJob) =>
+        job.output_kind === "video" && activeVideoStatuses.includes(job.status),
+    )
+    .slice(0, maxJobs);
+
+  for (const job of jobs) {
+    await reconcileVideoJob({ renderJobId: job.id, internal: true });
+  }
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, reconciled: jobs.length, state: nextState });
+}
+
+async function reconcileVideoJob(body: Record<string, unknown>) {
+  const renderJobId = String(body.renderJobId || "").trim();
+
+  if (!renderJobId) {
+    return NextResponse.json(
+      { ok: false, error: "renderJobId is required" },
+      { status: 400 },
+    );
+  }
+
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+  const job = state.renderJobs.find((item: RuntimeRenderJob) => item.id === renderJobId);
+
+  if (!job) {
+    return NextResponse.json(
+      { ok: false, error: "Render job not found" },
+      { status: 404 },
+    );
+  }
+
+  if (job.output_kind !== "video") {
+    return NextResponse.json(
+      { ok: false, error: "Only video render jobs can be reconciled by this action" },
+      { status: 400 },
+    );
+  }
+
+  const now = new Date().toISOString();
+  const providerPayload = job.provider_payload ?? {};
+  const mediaUrl = extractReconciliationMediaUrl(job, providerPayload);
+  const mimeType = extractReconciliationMimeType(providerPayload) || "video/mp4";
+
+  if (!mediaUrl) {
+    const degraded = shouldMarkVideoJobDegraded(job);
+    const nextStatus = degraded ? "degraded" : "awaiting_media";
+    const nextProgress = degraded ? job.progress_percent ?? 35 : Math.min(90, Math.max(job.progress_percent ?? 35, 45));
+
+    const { error: jobError } = await supabase
+      .from("render_jobs")
+      .update({
+        status: nextStatus,
+        progress_status: degraded
+          ? "provider-state-preserved-without-retrievable-media"
+          : "awaiting-provider-media-reconciliation",
+        progress_percent: nextProgress,
+        provider_payload: {
+          ...providerPayload,
+          v22: {
+            ...(isRecord(providerPayload.v22) ? providerPayload.v22 : {}),
+            lastReconciledAt: now,
+            reconciler: "server-side-bounded-refresh",
+            mediaAvailable: false,
+            degraded,
+          },
+        },
+        completed_at: degraded ? now : null,
+        error: degraded ? "Provider state was preserved, but no retrievable video media was available for admission." : null,
+      })
+      .eq("id", job.id);
+
+    if (jobError) throw jobError;
+
+    const { error: lineageError } = await supabase.from("lineage_events").insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      event_type: degraded ? "render-video-degraded" : "render-video-awaiting-media",
+      summary: degraded
+        ? "Video job preserved in degraded state without admissible media."
+        : "Video job checked; provider media is not yet available.",
+      payload: {
+        renderJobId: job.id,
+        provider: job.provider,
+        providerJobId: job.provider_job_id,
+        reconciledAt: now,
+        degraded,
+        artifactAdmitted: false,
+      },
+    });
+
+    if (lineageError) throw lineageError;
+
+    const nextState = await loadRuntimeState(projectId);
+    return NextResponse.json({ ok: true, reconciled: true, degraded, state: nextState });
+  }
+
+  const { error: reconcilingError } = await supabase
+    .from("render_jobs")
+    .update({
+      status: "reconciling",
+      progress_status: "reconciling-provider-video-media",
+      progress_percent: 92,
+      provider_payload: {
+        ...providerPayload,
+        v22: {
+          ...(isRecord(providerPayload.v22) ? providerPayload.v22 : {}),
+          reconciliationStartedAt: now,
+          mediaAvailable: true,
+        },
+      },
+    })
+    .eq("id", job.id);
+
+  if (reconcilingError) throw reconcilingError;
+
+  const persistedMedia = await persistExecutionMedia({
+    projectId,
+    renderJobId: job.id,
+    artifactType: "video",
+    artifactUrl: mediaUrl,
+    mimeType,
+  });
+
+  if (!persistedMedia.publicUrl) {
+    throw new Error("Video reconciliation found provider media but could not produce a public artifact URL.");
+  }
+
+  const admission = buildMotionContinuityAdmission(state, job);
+  const finalStatus = admission.status === "rejected" ? "rejected" : "completed";
+  const completedAt = new Date().toISOString();
+
+  let artifact: RuntimeArtifact | null = null;
+
+  if (admission.status !== "rejected") {
+    const { data, error: artifactError } = await supabase
+      .from("artifacts")
+      .insert({
+        project_id: projectId,
+        scene_id: job.scene_id,
+        render_job_id: job.id,
+        branch_id: job.branch_id,
+        artifact_type: "video",
+        storage_path: persistedMedia.storagePath,
+        public_url: persistedMedia.publicUrl,
+        mime_type: persistedMedia.mimeType,
+        provider: job.provider,
+        provider_job_id: job.provider_job_id,
+        metadata: {
+          v22: {
+            admission,
+            storageBacked: Boolean(persistedMedia.storagePath),
+            originalDelivery: persistedMedia.originalDelivery,
+            bucket: persistedMedia.bucket,
+            storagePath: persistedMedia.storagePath,
+            byteLength: persistedMedia.byteLength,
+            persistedAt: persistedMedia.persistedAt,
+          },
+          sourceRenderJobId: job.id,
+          providerPayload,
+        },
+      })
+      .select("*")
+      .single();
+
+    if (artifactError) throw artifactError;
+    artifact = data as RuntimeArtifact;
+  }
+
+  const { error: jobError } = await supabase
+    .from("render_jobs")
+    .update({
+      status: finalStatus,
+      output_url: admission.status === "rejected" ? null : persistedMedia.publicUrl,
+      artifact_id: artifact?.id ?? null,
+      completed_at: completedAt,
+      progress_status: admission.status === "rejected" ? "motion-continuity-rejected" : "completed",
+      progress_percent: admission.status === "rejected" ? 100 : 100,
+      provider_payload: {
+        ...providerPayload,
+        v22: {
+          ...(isRecord(providerPayload.v22) ? providerPayload.v22 : {}),
+          admission,
+          reconciledAt: completedAt,
+          artifactId: artifact?.id ?? null,
+          artifactAdmitted: admission.status !== "rejected",
+        },
+      },
+      error: admission.status === "rejected" ? "Motion continuity admission rejected this artifact." : null,
+    })
+    .eq("id", job.id);
+
+  if (jobError) throw jobError;
+
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: job.scene_id,
+    render_job_id: job.id,
+    event_type: admission.status === "rejected" ? "render-video-rejected" : "render-video-reconciled",
+    summary:
+      admission.status === "rejected"
+        ? "Video artifact rejected by motion continuity admission."
+        : "Video artifact reconciled and admitted into continuity runtime.",
+    payload: {
+      renderJobId: job.id,
+      artifactId: artifact?.id ?? null,
+      provider: job.provider,
+      providerJobId: job.provider_job_id,
+      admission,
+      completedAt,
+      artifactAdmitted: admission.status !== "rejected",
+    },
+  });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, reconciled: true, admission, artifact, state: nextState });
+}
+
+function extractReconciliationMediaUrl(job: RuntimeRenderJob, providerPayload: Record<string, unknown>) {
+  if (typeof job.output_url === "string" && /^https?:\/\//i.test(job.output_url)) return job.output_url;
+
+  const candidates = [
+    providerPayload.artifactUrl,
+    providerPayload.outputUrl,
+    providerPayload.publicUrl,
+    providerPayload.videoUrl,
+    (providerPayload.metadata as Record<string, unknown> | undefined)?.artifactUrl,
+    (providerPayload.metadata as Record<string, unknown> | undefined)?.outputUrl,
+    (providerPayload.metadata as Record<string, unknown> | undefined)?.publicUrl,
+    (providerPayload.metadata as Record<string, unknown> | undefined)?.videoUrl,
+    ((providerPayload.metadata as Record<string, unknown> | undefined)?.response as Record<string, unknown> | undefined)?.url,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && (candidate.startsWith("data:video/") || /^https?:\/\//i.test(candidate))) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function extractReconciliationMimeType(providerPayload: Record<string, unknown>) {
+  const candidates = [
+    providerPayload.mimeType,
+    (providerPayload.metadata as Record<string, unknown> | undefined)?.mimeType,
+    (providerPayload.metadata as Record<string, unknown> | undefined)?.contentType,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.includes("/")) return candidate;
+  }
+
+  return null;
+}
+
+function shouldMarkVideoJobDegraded(job: RuntimeRenderJob) {
+  const createdAt = job.started_at || job.created_at;
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  const thresholdMs = Number(process.env.SOLACEFRAME_VIDEO_DEGRADE_AFTER_MS || 1000 * 60 * 20);
+  return Number.isFinite(ageMs) && ageMs > thresholdMs;
+}
+
+function buildMotionContinuityAdmission(state: RuntimeState, job: RuntimeRenderJob) {
+  const baseContinuity = Math.max(0, Math.min(100, state.admissibilityReport.score));
+  const worldPenalty = Math.round((state.world.pressure || 0) * 0.08);
+  const branchPenalty = Math.round((state.activeBranch.divergence_score || 0) * 0.08);
+  const contradictionPenalty = state.contradictions.filter((item) => !item.resolved).length * 2;
+  const continuityScore = Math.max(0, Math.min(100, baseContinuity - worldPenalty - branchPenalty - contradictionPenalty));
+  const identityScore = Math.max(0, Math.min(100, Math.round(averageCharacterContinuity(state))));
+  const motionScore = Math.max(0, Math.min(100, continuityScore - (job.provider_job_id ? 0 : 4)));
+  const chronologyScore = Math.max(0, Math.min(100, 100 - branchPenalty - contradictionPenalty));
+  const environmentalScore = Math.max(0, Math.min(100, 100 - worldPenalty));
+  const aggregate = Math.round((continuityScore + identityScore + motionScore + chronologyScore + environmentalScore) / 5);
+  const status = aggregate >= 95 ? "admitted" : aggregate >= 90 ? "review" : "rejected";
+
+  return {
+    version: "v22-motion-continuity-admission",
+    continuity_score: continuityScore,
+    drift_score: 100 - aggregate,
+    identity_score: identityScore,
+    motion_score: motionScore,
+    chronology_score: chronologyScore,
+    environmental_score: environmentalScore,
+    aggregate_score: aggregate,
+    status,
+    reasons: status === "admitted"
+      ? ["Motion artifact admitted from current bounded runtime state."]
+      : status === "review"
+        ? ["Motion artifact requires operator review before it becomes a strong continuity anchor."]
+        : ["Motion artifact remains in lineage but is not admitted as canonical continuity media."],
+  };
+}
+
+function averageCharacterContinuity(state: RuntimeState) {
+  if (state.characters.length === 0) return 94;
+  return state.characters.reduce((sum, character) => sum + (character.continuity_score || 0), 0) / state.characters.length;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function isFatalProviderExecutionError(error: string | null) {
