@@ -14,7 +14,7 @@ export type RenderExecutionRequest = {
 };
 
 export type RenderExecutionResult = {
-  status: "completed" | "failed" | "blocked";
+  status: "completed" | "queued" | "failed" | "blocked";
   provider: string;
   providerJobId: string | null;
   artifactType: RenderOutputKind;
@@ -688,10 +688,12 @@ async function executeVercelGatewayVideoRender(
     const extraction = extractGeneratedVideo(result);
 
     if (!extraction.video) {
+      const providerJobId = extraction.providerJobId ?? extractProviderJobId(result);
+
       return {
-        status: "failed",
+        status: "queued",
         provider: "vercel-ai-gateway-video",
-        providerJobId: extractProviderJobId(result),
+        providerJobId,
         artifactType: "video",
         artifactUrl: null,
         mimeType: "application/json",
@@ -702,19 +704,19 @@ async function executeVercelGatewayVideoRender(
           aspectRatio,
           resolution,
           startedAt,
-          completedAt: new Date().toISOString(),
+          queuedAt: new Date().toISOString(),
           responseShape: summarizeVideoResultShape(result),
           response: safeProviderResponse(result),
-          v181: {
+          v201: {
             providerClass: "ai-gateway-video",
-            completionRuntime: "synchronous-ai-sdk-result-extraction",
+            executionMode: "async-provider-job-accepted",
             reason:
-              "No supported video payload was found on result.video, result.videos[0], result.files[0], or provider metadata.",
+              "AI Gateway accepted the video generation request but returned a job/operation response instead of an immediate MP4 payload. The render job remains queued/generating and must be polled or refreshed for completion.",
+            artifactAdmitted: false,
           },
           v19: buildContinuityLockMetadata(packet, "video"),
         },
-        error:
-          "Vercel AI Gateway video generation returned successfully, but no supported video payload was found.",
+        error: null,
       };
     }
 
