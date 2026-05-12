@@ -50,6 +50,54 @@ function jsonError(error: unknown, status = 500) {
   return NextResponse.json({ ok: false, ...normalized }, { status });
 }
 
+function getMissingSchemaColumn(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+
+  const record = error as Record<string, unknown>;
+  if (record.code !== "PGRST204") return null;
+
+  const message = typeof record.message === "string" ? record.message : "";
+  const match = message.match(/Could not find the '([^']+)' column/);
+  return match?.[1] ?? null;
+}
+
+async function insertArtifactWithSchemaFallback(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  payload: Record<string, unknown>
+) {
+  const mutablePayload = { ...payload };
+  const removedColumns: string[] = [];
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const { data, error } = await supabase
+      .schema("solaceframe")
+      .from("artifacts")
+      .insert(mutablePayload)
+      .select("*")
+      .single();
+
+    const missingColumn = getMissingSchemaColumn(error);
+
+    if (!missingColumn) {
+      return { data, error, removedColumns };
+    }
+
+    if (!(missingColumn in mutablePayload)) {
+      return { data, error, removedColumns };
+    }
+
+    delete mutablePayload[missingColumn];
+    removedColumns.push(missingColumn);
+  }
+
+  return {
+    data: null,
+    error: new Error("Artifact insert failed after repeated schema-cache fallback attempts."),
+    removedColumns
+  };
+}
+
+
 export async function GET() {
   try {
     const projectId = await ensureSeedRuntime();
@@ -295,7 +343,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
   const state = await loadRuntimeState(projectId);
-  const job = state.renderJobs.find((item) => item.id === renderJobId);
+  const job = state.renderJobs.find((item: { id: string }) => item.id === renderJobId);
 
   if (!job) {
     return NextResponse.json({ ok: false, error: "Render job not found" }, { status: 404 });
@@ -335,25 +383,14 @@ async function executeRenderJob(body: Record<string, unknown>) {
     metadata: execution.metadata
   };
 
-  let { data: artifact, error: artifactError } = await supabase
-    .from("artifacts")
-    .insert(artifactPayload)
-    .select("*")
-    .single();
+  const {
+    data: artifact,
+    error: artifactError,
+    removedColumns: artifactFallbackColumns
+  } = await insertArtifactWithSchemaFallback(getSupabaseAdmin(), artifactPayload);
 
-  // Some deployed Supabase instances may still have a stale PostgREST schema cache
-  // immediately after the V15 migration. Keep execution available by retrying
-  // without branch_id; the migration below backfills the column and refreshes cache.
-  if (artifactError?.code === "PGRST204" && artifactError.message?.includes("branch_id")) {
-    const { branch_id: _branchId, ...artifactPayloadWithoutBranch } = artifactPayload;
-    const fallbackResult = await supabase
-      .from("artifacts")
-      .insert(artifactPayloadWithoutBranch)
-      .select("*")
-      .single();
-
-    artifact = fallbackResult.data;
-    artifactError = fallbackResult.error;
+  if (artifactFallbackColumns.length > 0) {
+    console.warn("SolaceFrame artifact insert used schema-cache fallback:", artifactFallbackColumns);
   }
 
   if (artifactError) throw artifactError;
