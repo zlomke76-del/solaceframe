@@ -79,7 +79,16 @@ export default function Page() {
   const worldState = useMemo(() => runtime?.world?.state ?? {}, [runtime]);
   const latestDiff = runtime?.continuityDiffs?.[0] ?? null;
   const latestJob = runtime?.renderJobs?.[0] ?? null;
-  const latestArtifact = runtime?.artifacts?.[0] ?? null;
+  const mediaArtifacts = useMemo(
+    () =>
+      runtime?.artifacts?.filter(
+        (artifact) =>
+          Boolean(artifact.public_url) &&
+          (artifact.mime_type?.startsWith("image/") || artifact.mime_type?.startsWith("video/")),
+      ) ?? [],
+    [runtime],
+  );
+  const latestArtifact = mediaArtifacts[0] ?? null;
   const unresolvedContradictions = runtime?.contradictions?.filter((item) => !item.resolved) ?? [];
   const report = runtime?.admissibilityReport;
   const activeBranch = runtime?.activeBranch;
@@ -395,7 +404,7 @@ export default function Page() {
                   <div className="sf-eyebrow">Execution Artifacts</div>
                   <h2>Storage-backed outputs with visual continuity anchors</h2>
                 </div>
-                <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
+                <div className="sf-branch-pill">{mediaArtifacts.length} media artifacts</div>
               </div>
 
               {latestArtifact?.public_url && latestArtifact.mime_type?.startsWith("image/") ? (
@@ -410,7 +419,7 @@ export default function Page() {
               ) : null}
 
               <div className="sf-stack">
-                {runtime.artifacts.map((artifact) => {
+                {mediaArtifacts.map((artifact) => {
                   const isImage = artifact.mime_type?.startsWith("image/");
                   const isVideo = artifact.mime_type?.startsWith("video/");
                   const isInlinePayload = artifact.public_url?.startsWith("data:");
@@ -492,8 +501,8 @@ export default function Page() {
                     </div>
                   );
                 })}
-                {runtime.artifacts.length === 0 ? (
-                  <p className="sf-muted">No execution artifacts yet. Execute the latest render packet to create one.</p>
+                {mediaArtifacts.length === 0 ? (
+                  <p className="sf-muted">No media artifacts are currently admitted. Execute an image, storyboard, or video render to create one. Failed provider attempts remain in render-job lineage instead of being shown as fake artifacts.</p>
                 ) : null}
               </div>
             </section>
