@@ -44,6 +44,13 @@ type GatewayCompletionResponse = {
 
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1";
 
+type VideoAspectRatio = `${number}:${number}`;
+
+function getVideoAspectRatio(): VideoAspectRatio {
+  const raw = process.env.SOLACEFRAME_VIDEO_ASPECT_RATIO || "16:9";
+  return /^\d+:\d+$/.test(raw) ? (raw as VideoAspectRatio) : "16:9";
+}
+
 function decisionAllowsExecution(decision: Admissibility) {
   return decision === "allow" || decision === "conditional";
 }
@@ -333,7 +340,7 @@ async function executeVercelGatewayVideoRender(
   const duration = Number(
     process.env.SOLACEFRAME_VIDEO_DURATION_SECONDS || "5",
   );
-  const aspectRatio = process.env.SOLACEFRAME_VIDEO_ASPECT_RATIO || "16:9";
+  const aspectRatio = getVideoAspectRatio();
   const resolution = process.env.SOLACEFRAME_VIDEO_RESOLUTION || "1280x720";
   const prompt = buildGatewayVideoPrompt(packet);
   const startedAt = new Date().toISOString();
