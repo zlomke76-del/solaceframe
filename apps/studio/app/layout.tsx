@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SolaceFrame V20",
-  description: "Causal continuity runtime."
+  title: "SolaceFrame V21",
+  description: "Scenario bootstrap and governed continuity runtime."
 };
 
 export default function RootLayout({

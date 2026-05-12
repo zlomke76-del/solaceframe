@@ -1,7 +1,77 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { RuntimeContradiction, RuntimeState } from "@/lib/runtime/types";
+import type { RuntimeArtifact, RuntimeContradiction, RuntimeState } from "@/lib/runtime/types";
+
+type ScenarioDraft = {
+  title: string;
+  worldName: string;
+  location: string;
+  tone: string;
+  style: string;
+  primaryCharacterName: string;
+  primaryCharacterRole: string;
+  primaryCharacterDescription: string;
+  continuityRules: string;
+  initialSceneText: string;
+  resetReason: string;
+};
+
+const SCENARIO_PRESETS: ScenarioDraft[] = [
+  {
+    title: "Realistic Identity Continuity Test",
+    worldName: "Same Person / New Worlds",
+    location: "apartment mirror, city sidewalk, boutique hotel lobby, warm evening street",
+    tone: "realistic, intimate, editorial, same-person verification",
+    style: "8k ultra-realistic cinematic stills, shallow depth of field, natural candid emotion",
+    primaryCharacterName: "Mara Vale",
+    primaryCharacterRole: "Persistent synthetic actor",
+    primaryCharacterDescription: "same recognizable adult woman across different outfits and locations; face, age, hair identity, body proportions, and natural expression must remain stable",
+    continuityRules: [
+      "Preserve the same face, age, body structure, and core appearance markers across every output.",
+      "Allow wardrobe, location, weather, lighting, camera angle, and mood to vary.",
+      "Reject or flag any output where the person appears to become a different individual.",
+    ].join("\n"),
+    initialSceneText: "Mara Vale stands in front of a softly lit apartment mirror, phone partially covering her face, wearing a neutral winter outfit that can become the baseline identity reference.",
+    resetReason: "Operator cleared the board to start a realistic same-person image set.",
+  },
+  {
+    title: "Cinematic Street Continuity",
+    worldName: "Rainline District",
+    location: "rainy downtown streets, transit platforms, neon storefronts, quiet alleys",
+    tone: "cinematic, grounded, restrained tension",
+    style: "film still, natural motion blur, realistic lensing, no fantasy exaggeration",
+    primaryCharacterName: "Elena Voss",
+    primaryCharacterRole: "Primary continuity protagonist",
+    primaryCharacterDescription: "same adult protagonist with stable face, dark hair identity, practical wardrobe silhouette, and guarded expression",
+    continuityRules: [
+      "The yellow courier case remains persistent unless explicitly removed by a governed scene.",
+      "Left-arm injury remains visible unless repaired through lineage.",
+      "Weather and location may change only when the scene establishes the transition.",
+    ].join("\n"),
+    initialSceneText: "Elena Voss waits under a transit awning in cold rain, holding the yellow courier case close while her left arm remains guarded but visible.",
+    resetReason: "Operator reset into a cinematic continuity scenario.",
+  },
+  {
+    title: "Professional Avatar Identity Set",
+    worldName: "Executive Brand Studio",
+    location: "studio portrait space, modern office, conference lobby, outdoor business district",
+    tone: "polished, trusted, professional, human",
+    style: "high-end corporate editorial photography, realistic skin texture, natural posture",
+    primaryCharacterName: "Avery Stone",
+    primaryCharacterRole: "Brand-consistent digital representative",
+    primaryCharacterDescription: "same professional adult across polished business environments, preserving face, age, build, hairstyle, and calm direct presence",
+    continuityRules: [
+      "Preserve identity across business wardrobe variants.",
+      "Do not overbeautify or stylize into a different person.",
+      "Keep professional trust cues consistent across locations.",
+    ].join("\n"),
+    initialSceneText: "Avery Stone sits in a modern office beside a window, wearing a simple professional outfit, facing camera with calm credibility for a baseline avatar reference.",
+    resetReason: "Operator reset into a professional avatar continuity scenario.",
+  },
+];
+
+const DEFAULT_SCENARIO = SCENARIO_PRESETS[0];
 
 type ApiRuntimeResponse = {
   ok: boolean;
@@ -15,11 +85,75 @@ function decisionLabel(decision?: string) {
   return decision.toUpperCase();
 }
 
+function sanitizeRuntimeMessage(value: unknown) {
+  const text = typeof value === "string" ? value : "";
+
+  if (!text) return "Runtime provider unavailable";
+
+  const looksLikeHtml = /<(!doctype|html|head|body|div|script|style|span|meta)\b/i.test(text);
+  const mentionsProviderTimeout = /522|timed out|cloudflare|supabase/i.test(text);
+
+  if (looksLikeHtml || mentionsProviderTimeout) {
+    return "Runtime temporarily degraded: provider request timed out before returning usable JSON. Continuity state is preserved; refresh or retry when Supabase responds.";
+  }
+
+  return text.length > 320 ? `${text.slice(0, 320)}…` : text;
+}
+
+async function readRuntimeResponse(response: Response): Promise<ApiRuntimeResponse> {
+  const text = await response.text();
+
+  if (!text.trim()) {
+    return {
+      ok: false,
+      error: `Runtime returned an empty response (${response.status}).`,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(text) as ApiRuntimeResponse;
+
+    if (!parsed.ok) {
+      return {
+        ...parsed,
+        error: sanitizeRuntimeMessage(parsed.error ?? parsed.message ?? text),
+        message: sanitizeRuntimeMessage(parsed.message ?? parsed.error ?? text),
+      };
+    }
+
+    return parsed;
+  } catch {
+    return {
+      ok: false,
+      error: sanitizeRuntimeMessage(text),
+    };
+  }
+}
+
+async function fetchRuntime(input: RequestInfo | URL, init?: RequestInit) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Runtime temporarily degraded: provider request exceeded the 12-second browser safety window. Continuity state is preserved; retry is available.");
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export default function Page() {
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
-  const [sceneText, setSceneText] = useState(
-    "Elena crosses the damaged eastern bridge while hiding her left-arm injury and protecting the yellow courier case."
-  );
+  const [sceneText, setSceneText] = useState(DEFAULT_SCENARIO.initialSceneText);
+  const [scenarioDraft, setScenarioDraft] = useState<ScenarioDraft>(DEFAULT_SCENARIO);
   const [forkName, setForkName] = useState("Continuity Repair Fork");
   const [repairNote, setRepairNote] = useState("Resolved through governed repair lineage; prior state remains visible in ancestry.");
   const [loading, setLoading] = useState(true);
@@ -31,8 +165,8 @@ export default function Page() {
     setError(null);
 
     try {
-      const response = await fetch("/api/runtime", { cache: "no-store" });
-      const data = (await response.json()) as ApiRuntimeResponse;
+      const response = await fetchRuntime("/api/runtime", { cache: "no-store" });
+      const data = await readRuntimeResponse(response);
 
       if (!data.ok || !data.state) {
         throw new Error(data.error || data.message || "Unable to load runtime");
@@ -40,7 +174,7 @@ export default function Page() {
 
       setRuntime(data.state);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown load error");
+      setError(sanitizeRuntimeMessage(err instanceof Error ? err.message : "Unknown load error"));
     } finally {
       setLoading(false);
     }
@@ -51,13 +185,13 @@ export default function Page() {
     setError(null);
 
     try {
-      const response = await fetch("/api/runtime", {
+      const response = await fetchRuntime("/api/runtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
 
-      const data = (await response.json()) as ApiRuntimeResponse;
+      const data = await readRuntimeResponse(response);
 
       if (!data.ok || !data.state) {
         throw new Error(data.error || data.message || "Runtime action failed");
@@ -65,8 +199,12 @@ export default function Page() {
 
       setRuntime(data.state);
       if (body.action === "compile_scene") setSceneText("");
+      if (body.action === "bootstrap_scenario" || body.action === "reset_world") {
+        const nextSceneText = typeof body.initialSceneText === "string" ? body.initialSceneText : "";
+        setSceneText(nextSceneText);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown runtime action error");
+      setError(sanitizeRuntimeMessage(err instanceof Error ? err.message : "Unknown runtime action error"));
     } finally {
       setBusy(null);
     }
@@ -82,16 +220,37 @@ export default function Page() {
   const mediaArtifacts = useMemo(
     () =>
       runtime?.artifacts?.filter(
-        (artifact) =>
+        (artifact: RuntimeArtifact) =>
           Boolean(artifact.public_url) &&
           (artifact.mime_type?.startsWith("image/") || artifact.mime_type?.startsWith("video/")),
       ) ?? [],
     [runtime],
   );
   const latestArtifact = mediaArtifacts[0] ?? null;
-  const unresolvedContradictions = runtime?.contradictions?.filter((item) => !item.resolved) ?? [];
+  const unresolvedContradictions = runtime?.contradictions?.filter((item: RuntimeContradiction) => !item.resolved) ?? [];
   const report = runtime?.admissibilityReport;
   const activeBranch = runtime?.activeBranch;
+  const scenarioTitle =
+    typeof worldState.scenarioTitle === "string"
+      ? worldState.scenarioTitle
+      : runtime?.world?.name ?? "Prime Continuity";
+
+  function updateScenarioDraft<K extends keyof ScenarioDraft>(key: K, value: ScenarioDraft[K]) {
+    setScenarioDraft((current: ScenarioDraft) => ({ ...current, [key]: value }));
+  }
+
+  function runScenarioAction(action: "bootstrap_scenario" | "reset_world") {
+    const payload = {
+      action,
+      ...scenarioDraft,
+      continuityRules: scenarioDraft.continuityRules
+        .split(/\n|,/)
+        .map((item: string) => item.trim())
+        .filter(Boolean),
+    };
+
+    return runRuntimeAction(payload, action === "reset_world" ? "reset-world" : "bootstrap-scenario");
+  }
 
   return (
     <main className="sf-shell">
@@ -102,6 +261,7 @@ export default function Page() {
 
         <nav className="sf-nav">
           {[
+            "Scenario Bootstrap",
             "Admissibility",
             "Scene Compile",
             "Branch Forking",
@@ -125,10 +285,11 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V19 · Continuity Lock Runtime</div>
+            <div className="sf-eyebrow">SolaceFrame V21 · Scenario Bootstrap Runtime</div>
             <h1 className="sf-title">
-              Approved artifacts can now become visual continuity anchors for image-to-video and cross-output identity locking.
+              Clear the board, preserve lineage, and start fresh continuity scenarios without losing audit history.
             </h1>
+            <div className="sf-scenario-line">Active scenario: <strong>{scenarioTitle}</strong></div>
           </div>
 
           <div className={`sf-status decision-${report?.decision ?? "loading"}`}>
@@ -140,6 +301,117 @@ export default function Page() {
 
         {runtime ? (
           <>
+            <section className="sf-card sf-scenario-card">
+              <div className="sf-card-head">
+                <div>
+                  <div className="sf-eyebrow">V21 Scenario Control</div>
+                  <h2>Start fresh without destroying continuity history</h2>
+                </div>
+                <div className="sf-branch-pill">{runtime.world.name}</div>
+              </div>
+
+              <div className="sf-preset-row">
+                {SCENARIO_PRESETS.map((preset) => (
+                  <button
+                    className="sf-preset"
+                    key={preset.title}
+                    onClick={() => setScenarioDraft(preset)}
+                    disabled={Boolean(busy)}
+                  >
+                    {preset.title}
+                  </button>
+                ))}
+              </div>
+
+              <div className="sf-scenario-grid">
+                <label className="sf-field">
+                  <span>Scenario title</span>
+                  <input
+                    className="sf-input compact"
+                    value={scenarioDraft.title}
+                    onChange={(event) => updateScenarioDraft("title", event.target.value)}
+                  />
+                </label>
+
+                <label className="sf-field">
+                  <span>World name</span>
+                  <input
+                    className="sf-input compact"
+                    value={scenarioDraft.worldName}
+                    onChange={(event) => updateScenarioDraft("worldName", event.target.value)}
+                  />
+                </label>
+
+                <label className="sf-field">
+                  <span>Primary character</span>
+                  <input
+                    className="sf-input compact"
+                    value={scenarioDraft.primaryCharacterName}
+                    onChange={(event) => updateScenarioDraft("primaryCharacterName", event.target.value)}
+                  />
+                </label>
+
+                <label className="sf-field">
+                  <span>Location set</span>
+                  <input
+                    className="sf-input compact"
+                    value={scenarioDraft.location}
+                    onChange={(event) => updateScenarioDraft("location", event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <label className="sf-field">
+                <span>Identity / appearance anchor</span>
+                <textarea
+                  className="sf-textarea short"
+                  value={scenarioDraft.primaryCharacterDescription}
+                  onChange={(event) => updateScenarioDraft("primaryCharacterDescription", event.target.value)}
+                />
+              </label>
+
+              <label className="sf-field">
+                <span>Continuity rules</span>
+                <textarea
+                  className="sf-textarea short"
+                  value={scenarioDraft.continuityRules}
+                  onChange={(event) => updateScenarioDraft("continuityRules", event.target.value)}
+                />
+              </label>
+
+              <label className="sf-field">
+                <span>Initial scene</span>
+                <textarea
+                  className="sf-textarea short"
+                  value={scenarioDraft.initialSceneText}
+                  onChange={(event) => updateScenarioDraft("initialSceneText", event.target.value)}
+                />
+              </label>
+
+              <div className="sf-action-row">
+                <button
+                  className="sf-primary"
+                  onClick={() => void runScenarioAction("bootstrap_scenario")}
+                  disabled={Boolean(busy) || !scenarioDraft.initialSceneText.trim()}
+                >
+                  {busy === "bootstrap-scenario" ? "Bootstrapping..." : "Bootstrap Scenario"}
+                </button>
+
+                <button
+                  className="sf-primary subtle danger-action"
+                  onClick={() => void runScenarioAction("reset_world")}
+                  disabled={Boolean(busy) || !scenarioDraft.initialSceneText.trim()}
+                >
+                  {busy === "reset-world" ? "Resetting World..." : "Reset World + Start Fresh"}
+                </button>
+              </div>
+
+              <p className="sf-muted">
+                Reset archives the current world and branch, creates a new active world, seeds the primary identity,
+                and queues the first render packet. Prior lineage remains available for audit.
+              </p>
+            </section>
+
             <section className="sf-card sf-admissibility-card">
               <div className="sf-card-head">
                 <div>
