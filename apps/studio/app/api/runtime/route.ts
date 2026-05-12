@@ -32,31 +32,45 @@ type RuntimeAction =
   | "reset_world"
   | "set_continuity_anchor";
 
+function sanitizeRuntimeErrorText(value: unknown) {
+  const text = typeof value === "string" ? value : String(value || "Unknown runtime error");
+  const looksLikeHtml = /<(!doctype|html|head|body|div|script|style|span|meta)\b/i.test(text);
+  const mentionsProviderTimeout = /522|timed out|cloudflare|supabase/i.test(text);
+
+  if (looksLikeHtml || mentionsProviderTimeout) {
+    return "Runtime provider unavailable or timed out before returning usable JSON.";
+  }
+
+  return text.length > 420 ? `${text.slice(0, 420)}…` : text;
+}
+
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
     return {
-      message: error.message,
-      raw: { name: error.name, stack: error.stack },
+      message: sanitizeRuntimeErrorText(error.message),
+      raw: { name: error.name },
     };
   }
 
   if (typeof error === "object" && error !== null) {
     const record = error as Record<string, unknown>;
+    const message =
+      typeof record.message === "string"
+        ? record.message
+        : typeof record.error === "string"
+          ? record.error
+          : "Non-Error runtime failure";
+
     return {
-      message:
-        typeof record.message === "string"
-          ? record.message
-          : typeof record.error === "string"
-            ? record.error
-            : "Non-Error runtime failure",
+      message: sanitizeRuntimeErrorText(message),
       code: typeof record.code === "string" ? record.code : undefined,
-      details: typeof record.details === "string" ? record.details : undefined,
-      hint: typeof record.hint === "string" ? record.hint : undefined,
-      raw: record,
+      details: typeof record.details === "string" ? sanitizeRuntimeErrorText(record.details) : undefined,
+      hint: typeof record.hint === "string" ? sanitizeRuntimeErrorText(record.hint) : undefined,
+      raw: { sanitized: true },
     };
   }
 
-  return { message: String(error || "Unknown runtime error"), raw: error };
+  return { message: sanitizeRuntimeErrorText(error), raw: { sanitized: true } };
 }
 
 function jsonError(error: unknown, status = 500) {
