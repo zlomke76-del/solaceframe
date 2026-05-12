@@ -18,3 +18,67 @@
 .sf-artifact-meta .sf-mini {
   margin-top: 0;
 }
+
+.sf-scenario-line {
+  margin-top: 12px;
+  color: rgba(255,255,255,.68);
+  font-size: 14px;
+}
+
+.sf-scenario-card {
+  border-color: rgba(14,165,233,.18);
+}
+
+.sf-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.sf-preset {
+  border: 1px solid rgba(255,255,255,.1);
+  color: rgba(255,255,255,.86);
+  background: rgba(255,255,255,.055);
+  padding: 10px 12px;
+  border-radius: 999px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.sf-preset:hover {
+  background: rgba(255,255,255,.09);
+}
+
+.sf-scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.sf-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sf-field span {
+  color: rgba(255,255,255,.62);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.sf-input.compact {
+  margin: 0;
+}
+
+.danger-action {
+  border-color: rgba(239,68,68,.26) !important;
+}
+
+@media(max-width:780px){
+  .sf-scenario-grid{grid-template-columns:1fr}
+  .sf-preset-row{display:grid}
+}
