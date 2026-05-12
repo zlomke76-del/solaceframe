@@ -10,9 +10,13 @@ import {
 } from "@/lib/runtime/engine";
 import { executeRenderRequest } from "@/lib/runtime/execution";
 import type {
+  RuntimeArtifact,
   RuntimeCausalEvent,
   RuntimeCharacter,
   RuntimeContradiction,
+  RuntimeContinuityDiff,
+  RuntimeRenderJob,
+  RuntimeScene,
   RuntimeWorld,
 } from "@/lib/runtime/types";
 
@@ -23,7 +27,10 @@ type RuntimeAction =
   | "compile_scene"
   | "fork_branch"
   | "resolve_contradiction"
-  | "execute_render_job";
+  | "execute_render_job"
+  | "bootstrap_scenario"
+  | "reset_world"
+  | "set_continuity_anchor";
 
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
@@ -83,6 +90,18 @@ export async function POST(request: Request) {
 
     if (action === "execute_render_job") {
       return await executeRenderJob(body);
+    }
+
+    if (action === "bootstrap_scenario") {
+      return await bootstrapScenario(body, false);
+    }
+
+    if (action === "reset_world") {
+      return await bootstrapScenario(body, true);
+    }
+
+    if (action === "set_continuity_anchor") {
+      return await setContinuityAnchor(body);
     }
 
     return await compileScene(body);
@@ -318,7 +337,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
   const state = await loadRuntimeState(projectId);
-  const job = state.renderJobs.find((item) => item.id === renderJobId);
+  const job = state.renderJobs.find((item: RuntimeRenderJob) => item.id === renderJobId);
 
   if (!job) {
     return NextResponse.json(
@@ -822,6 +841,400 @@ function extensionForMimeType(mimeType: string, artifactType: string) {
   return "bin";
 }
 
+
+type ScenarioBootstrapInput = {
+  title: string;
+  worldName: string;
+  location: string;
+  tone: string;
+  style: string;
+  primaryCharacterName: string;
+  primaryCharacterRole: string;
+  primaryCharacterDescription: string;
+  continuityRules: string[];
+  initialSceneText: string;
+  resetReason: string;
+};
+
+function normalizeString(value: unknown, fallback: string) {
+  const normalized = String(value || "").trim();
+  return normalized || fallback;
+}
+
+function normalizeStringList(value: unknown, fallback: string[]) {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => String(item || "").trim()).filter(Boolean);
+    if (items.length > 0) return items;
+  }
+
+  if (typeof value === "string") {
+    const items = value
+      .split(/\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (items.length > 0) return items;
+  }
+
+  return fallback;
+}
+
+function normalizeScenarioInput(body: Record<string, unknown>): ScenarioBootstrapInput {
+  const title = normalizeString(body.title, "Fresh Continuity Scenario");
+  const worldName = normalizeString(body.worldName, `${title} World`);
+  const location = normalizeString(body.location, "realistic urban interior and exterior locations");
+  const tone = normalizeString(body.tone, "grounded, cinematic, continuity-first");
+  const style = normalizeString(body.style, "realistic 8k editorial film stills with natural lighting");
+  const primaryCharacterName = normalizeString(body.primaryCharacterName, "Primary Synthetic Actor");
+  const primaryCharacterRole = normalizeString(body.primaryCharacterRole, "Persistent identity anchor");
+  const primaryCharacterDescription = normalizeString(
+    body.primaryCharacterDescription,
+    "same recognizable person across different outfits, locations, camera angles, and lighting conditions",
+  );
+  const continuityRules = normalizeStringList(body.continuityRules, [
+    "Preserve the same face, age, body structure, and core appearance markers across every output.",
+    "Clothing, location, weather, lighting, and camera angle may vary without changing identity.",
+    "Do not accept silent identity drift; continuity violations must remain visible in lineage.",
+  ]);
+  const initialSceneText = normalizeString(
+    body.initialSceneText,
+    `${primaryCharacterName} appears in a neutral baseline portrait for continuity anchoring before scene variation begins.`,
+  );
+  const resetReason = normalizeString(
+    body.resetReason,
+    "Operator started a fresh scenario while preserving archived lineage.",
+  );
+
+  return {
+    title,
+    worldName,
+    location,
+    tone,
+    style,
+    primaryCharacterName,
+    primaryCharacterRole,
+    primaryCharacterDescription,
+    continuityRules,
+    initialSceneText,
+    resetReason,
+  };
+}
+
+async function bootstrapScenario(body: Record<string, unknown>, resetExistingWorld: boolean) {
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const previousState = await loadRuntimeState(projectId);
+  const scenario = normalizeScenarioInput(body);
+  const now = new Date().toISOString();
+
+  if (resetExistingWorld) {
+    const archivedWorldState = {
+      ...previousState.world.state,
+      archived: true,
+      archivedAt: now,
+      archiveReason: scenario.resetReason,
+      successorScenario: scenario.title,
+    };
+
+    const { error: archiveWorldError } = await supabase
+      .from("worlds")
+      .update({
+        name: `${previousState.world.name} · archived`,
+        state: archivedWorldState,
+        pressure: Math.min(100, previousState.world.pressure + 4),
+      })
+      .eq("id", previousState.world.id);
+
+    if (archiveWorldError) throw archiveWorldError;
+
+    const { error: archiveBranchError } = await supabase
+      .from("branches")
+      .update({
+        status: "archived",
+        snapshot: {
+          ...(previousState.activeBranch.snapshot ?? {}),
+          archivedAt: now,
+          archiveReason: scenario.resetReason,
+          successorScenario: scenario.title,
+        },
+      })
+      .eq("id", previousState.activeBranch.id);
+
+    if (archiveBranchError) throw archiveBranchError;
+
+    for (const character of previousState.characters) {
+      const { error: archiveCharacterError } = await supabase
+        .from("characters")
+        .update({
+          state: {
+            ...character.state,
+            archived: true,
+            archivedAt: now,
+            archiveReason: scenario.resetReason,
+          },
+          pressure: Math.min(100, character.pressure + 2),
+        })
+        .eq("id", character.id);
+
+      if (archiveCharacterError) throw archiveCharacterError;
+    }
+  }
+
+  const { data: branch, error: branchError } = await supabase
+    .from("branches")
+    .insert({
+      project_id: projectId,
+      parent_branch_id: resetExistingWorld ? previousState.activeBranch.id : null,
+      name: scenario.title,
+      divergence_score: 0,
+      status: "active",
+      snapshot: {
+        bootstrappedAt: now,
+        scenario,
+        previousBranchId: resetExistingWorld ? previousState.activeBranch.id : null,
+        previousWorldId: resetExistingWorld ? previousState.world.id : null,
+      },
+      fork_reason: resetExistingWorld
+        ? scenario.resetReason
+        : "Operator bootstrapped a new governed scenario.",
+    })
+    .select("*")
+    .single();
+
+  if (branchError) throw branchError;
+
+  const { data: world, error: worldError } = await supabase
+    .from("worlds")
+    .insert({
+      project_id: projectId,
+      name: scenario.worldName,
+      pressure: 8,
+      state: {
+        active: true,
+        scenarioTitle: scenario.title,
+        location: scenario.location,
+        tone: scenario.tone,
+        style: scenario.style,
+        continuityRules: scenario.continuityRules,
+        persistentObjects: [],
+        unresolvedTensions: [],
+        pressureTrend: "fresh-bootstrap",
+        bootstrappedAt: now,
+        previousWorldId: resetExistingWorld ? previousState.world.id : null,
+      },
+    })
+    .select("*")
+    .single();
+
+  if (worldError) throw worldError;
+
+  const { error: projectError } = await supabase
+    .from("projects")
+    .update({ active_branch_id: branch.id })
+    .eq("id", projectId);
+
+  if (projectError) throw projectError;
+
+  const { data: character, error: characterError } = await supabase
+    .from("characters")
+    .insert({
+      project_id: projectId,
+      name: scenario.primaryCharacterName,
+      role: scenario.primaryCharacterRole,
+      appearance_anchor: {
+        description: scenario.primaryCharacterDescription,
+        visualLock: "pending-primary-anchor",
+        identityContinuity: "same-person-preservation-required",
+        allowedVariation: ["wardrobe", "location", "lighting", "weather", "camera angle", "emotional state"],
+        lockedTraits: ["face", "age", "body structure", "hair identity", "core appearance markers"],
+      },
+      state: {
+        active: true,
+        scenarioTitle: scenario.title,
+        continuityRules: scenario.continuityRules,
+        emotionalState: "neutral baseline",
+        carriedObjects: [],
+        wardrobeState: "baseline-neutral",
+      },
+      continuity_score: 96,
+      pressure: 6,
+    })
+    .select("*")
+    .single();
+
+  if (characterError) throw characterError;
+
+  const analysis = analyzeScene(scenario.initialSceneText, world as RuntimeWorld, [character as RuntimeCharacter], [], []);
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .insert({
+      project_id: projectId,
+      branch_id: branch.id,
+      title: analysis.title,
+      scene_text: scenario.initialSceneText,
+      admissibility: analysis.admissibility,
+      drift_risk: analysis.driftRisk,
+      compiled_packet: {
+        ...analysis.packet,
+        scenarioBootstrap: true,
+        scenario,
+        identityPreservation: {
+          primaryCharacterId: character.id,
+          primaryCharacterName: scenario.primaryCharacterName,
+          status: "anchor-pending",
+        },
+      },
+    })
+    .select("*")
+    .single();
+
+  if (sceneError) throw sceneError;
+
+  const { data: renderJob, error: renderError } = await supabase
+    .from("render_jobs")
+    .insert({
+      project_id: projectId,
+      scene_id: scene.id,
+      branch_id: branch.id,
+      status: analysis.admissibility === "blocked" ? "blocked" : "queued",
+      model_route: "solaceframe-execution-router",
+      prompt: buildCanonicalPrompt(scenario.initialSceneText, {
+        ...analysis.packet,
+        scenarioBootstrap: true,
+        continuityRules: scenario.continuityRules,
+      }),
+      packet: {
+        ...analysis.packet,
+        scenarioBootstrap: true,
+        scenario,
+        primaryCharacter: character,
+        world,
+      },
+      output_kind: "image",
+      execution_mode: "manual",
+      progress_status: "scenario-bootstrap-ready",
+      progress_percent: 0,
+    })
+    .select("*")
+    .single();
+
+  if (renderError) throw renderError;
+
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: scene.id,
+    render_job_id: renderJob.id,
+    event_type: resetExistingWorld ? "world-reset-scenario-bootstrapped" : "scenario-bootstrapped",
+    summary: resetExistingWorld
+      ? `World reset and scenario bootstrapped: ${scenario.title}`
+      : `Scenario bootstrapped: ${scenario.title}`,
+    payload: {
+      scenario,
+      resetExistingWorld,
+      previousWorldId: resetExistingWorld ? previousState.world.id : null,
+      previousBranchId: resetExistingWorld ? previousState.activeBranch.id : null,
+      worldId: world.id,
+      branchId: branch.id,
+      characterId: character.id,
+      sceneId: scene.id,
+      renderJobId: renderJob.id,
+    },
+  });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, scenario, state: nextState });
+}
+
+async function setContinuityAnchor(body: Record<string, unknown>) {
+  const artifactId = String(body.artifactId || "").trim();
+  const reason = normalizeString(
+    body.reason,
+    "Operator approved this artifact as the visual continuity anchor for future renders.",
+  );
+
+  if (!artifactId) {
+    return NextResponse.json(
+      { ok: false, error: "artifactId is required" },
+      { status: 400 },
+    );
+  }
+
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+  const artifact = state.artifacts.find((item: RuntimeArtifact) => item.id === artifactId);
+
+  if (!artifact) {
+    return NextResponse.json(
+      { ok: false, error: "Artifact not found in active runtime" },
+      { status: 404 },
+    );
+  }
+
+  const metadata = artifact.metadata ?? {};
+  const nextMetadata = {
+    ...metadata,
+    v19: {
+      ...(typeof metadata.v19 === "object" && metadata.v19 !== null ? metadata.v19 : {}),
+      continuityAnchor: true,
+      continuityScore: 98,
+      anchorLockedAt: new Date().toISOString(),
+      reason,
+    },
+    v21: {
+      scenarioAnchor: true,
+      activeBranchId: state.activeBranch.id,
+      activeWorldId: state.world.id,
+    },
+  };
+
+  const { error: artifactError } = await supabase
+    .from("artifacts")
+    .update({ metadata: nextMetadata })
+    .eq("id", artifact.id);
+
+  if (artifactError) throw artifactError;
+
+  if (state.characters[0]?.id) {
+    const { error: characterError } = await supabase
+      .from("characters")
+      .update({
+        appearance_anchor: {
+          ...(state.characters[0]?.appearance_anchor ?? {}),
+          primaryArtifactId: artifact.id,
+          primaryArtifactUrl: artifact.public_url,
+          visualLock: "active",
+          lockedAt: new Date().toISOString(),
+        },
+        continuity_score: 98,
+      })
+      .eq("id", state.characters[0].id);
+
+    if (characterError) throw characterError;
+  }
+
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: artifact.scene_id,
+    render_job_id: artifact.render_job_id,
+    event_type: "continuity-anchor-set",
+    summary: "Artifact promoted to visual continuity anchor.",
+    payload: {
+      artifactId: artifact.id,
+      branchId: state.activeBranch.id,
+      worldId: state.world.id,
+      reason,
+    },
+  });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, artifactId: artifact.id, state: nextState });
+}
+
 async function forkBranch(body: Record<string, unknown>) {
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
@@ -1017,7 +1430,7 @@ async function loadRuntimeState(projectId: string) {
     .from("worlds")
     .select("*")
     .eq("project_id", projectId)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -1142,19 +1555,43 @@ async function loadRuntimeState(projectId: string) {
     contradictions,
   });
 
+  const activeBranchIdForState = activeBranch.id as string;
+  const activeCharacters = ((charactersResult.data ?? []) as RuntimeCharacter[]).filter(
+    (character) => (character.state as Record<string, unknown>).archived !== true,
+  );
+  const activeScenes = ((scenesResult.data ?? []) as RuntimeScene[]).filter(
+    (scene: RuntimeScene) => scene.branch_id === activeBranchIdForState,
+  );
+  const activeRenderJobs = ((renderJobsResult.data ?? []) as RuntimeRenderJob[]).filter(
+    (job: RuntimeRenderJob) => job.branch_id === activeBranchIdForState,
+  );
+  const activeArtifacts = ((artifactsResult.data ?? []) as RuntimeArtifact[]).filter(
+    (artifact: RuntimeArtifact) => artifact.branch_id === activeBranchIdForState,
+  );
+  const activeContinuityDiffs = ((continuityDiffsResult.data ?? []) as RuntimeContinuityDiff[]).filter((diff: RuntimeContinuityDiff) => {
+    if (!diff.scene_id) return true;
+    return activeScenes.some((scene: RuntimeScene) => scene.id === diff.scene_id);
+  });
+  const activeCausalEvents = causalEvents.filter(
+    (event) => !event.branch_id || event.branch_id === activeBranchIdForState,
+  );
+  const activeContradictions = contradictions.filter(
+    (item) => !item.branch_id || item.branch_id === activeBranchIdForState,
+  );
+
   return {
     project,
     world,
     activeBranch,
     branches: branchesResult.data ?? [],
-    characters: (charactersResult.data ?? []) as RuntimeCharacter[],
-    scenes: scenesResult.data ?? [],
-    renderJobs: renderJobsResult.data ?? [],
-    artifacts: artifactsResult.data ?? [],
+    characters: activeCharacters,
+    scenes: activeScenes,
+    renderJobs: activeRenderJobs,
+    artifacts: activeArtifacts,
     lineageEvents: lineageEventsResult.data ?? [],
-    continuityDiffs: continuityDiffsResult.data ?? [],
-    causalEvents,
-    contradictions,
+    continuityDiffs: activeContinuityDiffs,
+    causalEvents: activeCausalEvents,
+    contradictions: activeContradictions,
     admissibilityReport,
   };
 }
