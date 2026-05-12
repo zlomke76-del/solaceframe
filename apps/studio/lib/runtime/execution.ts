@@ -103,12 +103,125 @@ export function buildExecutionPacket(
       characters: activeCharacters,
       latestContinuityDiff: state.continuityDiffs[0] ?? null,
       causalEvents: state.causalEvents.slice(0, 30),
+      visualAnchors: buildVisualContinuityAnchors(state),
     },
     rendering: buildRenderInstructions(
       outputKind,
       job.prompt,
       state.admissibilityReport,
     ),
+  };
+}
+
+function buildVisualContinuityAnchors(state: RuntimeState) {
+  const mediaArtifacts = state.artifacts.filter((artifact) =>
+    Boolean(artifact.public_url) &&
+    (artifact.mime_type?.startsWith("image/") || artifact.mime_type?.startsWith("video/")),
+  );
+
+  const approvedAnchors = mediaArtifacts.filter((artifact) => {
+    const v19 = artifact.metadata?.v19 as Record<string, unknown> | undefined;
+    return v19?.continuityAnchor === true;
+  });
+
+  const primaryAnchor = approvedAnchors[0] ?? mediaArtifacts[0] ?? null;
+
+  return {
+    primary: primaryAnchor
+      ? {
+          artifactId: primaryAnchor.id,
+          artifactType: primaryAnchor.artifact_type,
+          publicUrl: primaryAnchor.public_url,
+          mimeType: primaryAnchor.mime_type,
+          provider: primaryAnchor.provider,
+          createdAt: primaryAnchor.created_at,
+          lockStatus: approvedAnchors[0] ? "operator-approved" : "latest-media-fallback",
+          metadata: primaryAnchor.metadata,
+        }
+      : null,
+    approved: approvedAnchors.slice(0, 8).map((artifact) => ({
+      artifactId: artifact.id,
+      artifactType: artifact.artifact_type,
+      publicUrl: artifact.public_url,
+      mimeType: artifact.mime_type,
+      provider: artifact.provider,
+      createdAt: artifact.created_at,
+      metadata: artifact.metadata,
+    })),
+    recentMedia: mediaArtifacts.slice(0, 8).map((artifact) => ({
+      artifactId: artifact.id,
+      artifactType: artifact.artifact_type,
+      publicUrl: artifact.public_url,
+      mimeType: artifact.mime_type,
+      provider: artifact.provider,
+      createdAt: artifact.created_at,
+    })),
+  };
+}
+
+function getPrimaryVisualAnchor(packet: Record<string, unknown>) {
+  const continuity = packet.continuity as Record<string, unknown> | undefined;
+  const visualAnchors = continuity?.visualAnchors as Record<string, unknown> | undefined;
+  const primary = visualAnchors?.primary as Record<string, unknown> | null | undefined;
+  if (!primary) return null;
+  const publicUrl = stringValue(primary.publicUrl);
+  if (!publicUrl) return null;
+  return {
+    artifactId: stringValue(primary.artifactId),
+    artifactType: stringValue(primary.artifactType),
+    publicUrl,
+    mimeType: stringValue(primary.mimeType),
+    lockStatus: stringValue(primary.lockStatus),
+  };
+}
+
+function estimateArtifactContinuityScore(packet: Record<string, unknown>, outputKind: RenderOutputKind) {
+  const continuity = packet.continuity as Record<string, unknown> | undefined;
+  const world = continuity?.world as { state?: Record<string, unknown>; pressure?: number } | undefined;
+  const branch = continuity?.activeBranch as { divergence_score?: number } | undefined;
+  const characters = Array.isArray(continuity?.characters) ? continuity.characters : [];
+  const visualAnchor = getPrimaryVisualAnchor(packet);
+  const renderConstraints = Array.isArray(world?.state?.renderConstraints)
+    ? world?.state?.renderConstraints.length
+    : 0;
+  const averageCharacterContinuity = characters.length
+    ? characters.reduce((sum, item) => {
+        const record = item as Record<string, unknown>;
+        const score = typeof record.continuityScore === "number" ? record.continuityScore : 80;
+        return sum + score;
+      }, 0) / characters.length
+    : 80;
+
+  let score = Math.round(averageCharacterContinuity);
+  if (visualAnchor) score += 10;
+  if (outputKind === "video" && visualAnchor) score += 5;
+  if (renderConstraints >= 4) score += 4;
+  score -= Math.round((world?.pressure ?? 0) / 10);
+  score -= Math.round((branch?.divergence_score ?? 0) / 10);
+  return Math.max(0, Math.min(100, score));
+}
+
+function buildContinuityLockMetadata(packet: Record<string, unknown>, outputKind: RenderOutputKind) {
+  const visualAnchor = getPrimaryVisualAnchor(packet);
+  return {
+    version: "v19-continuity-lock",
+    visualAnchorUsed: Boolean(visualAnchor),
+    visualAnchor,
+    continuityScore: estimateArtifactContinuityScore(packet, outputKind),
+    lockMode:
+      outputKind === "video" && visualAnchor
+        ? "image-to-video-reference-frame"
+        : visualAnchor
+          ? "reference-informed-render"
+          : "textual-runtime-only",
+    driftChecks: [
+      "character identity",
+      "wardrobe silhouette",
+      "yellow courier case",
+      "left-arm injury visibility",
+      "damaged bridge/location continuity",
+      "rain/cold lighting continuity",
+    ],
   };
 }
 
@@ -318,6 +431,7 @@ async function executeVercelGatewayRender(
         gatewayModel: data.model ?? model,
         usage: data.usage ?? null,
         providerMetadata: data.providerMetadata ?? null,
+        v19: buildContinuityLockMetadata(packet, outputKind),
       },
       error: null,
     };
@@ -341,14 +455,19 @@ async function executeVercelGatewayRender(
 async function executeVercelGatewayVideoRender(
   packet: Record<string, unknown>,
 ): Promise<RenderExecutionResult> {
+  const visualAnchor = getPrimaryVisualAnchor(packet);
   const model =
-    process.env.SOLACEFRAME_VIDEO_MODEL || "bytedance/seedance-v1.0-pro-fast";
+    process.env.SOLACEFRAME_VIDEO_MODEL ||
+    (visualAnchor ? "bytedance/seedance-v1.5-pro" : "bytedance/seedance-v1.0-pro-fast");
   const duration = Number(
     process.env.SOLACEFRAME_VIDEO_DURATION_SECONDS || "5",
   );
   const aspectRatio = getVideoAspectRatio();
   const resolution = getVideoResolution();
-  const prompt = buildGatewayVideoPrompt(packet);
+  const promptText = buildGatewayVideoPrompt(packet);
+  const prompt = visualAnchor
+    ? { image: visualAnchor.publicUrl, text: promptText }
+    : promptText;
   const startedAt = new Date().toISOString();
 
   try {
@@ -389,6 +508,7 @@ async function executeVercelGatewayVideoRender(
             reason:
               "No supported video payload was found on result.video, result.videos[0], result.files[0], or provider metadata.",
           },
+          v19: buildContinuityLockMetadata(packet, "video"),
         },
         error:
           "Vercel AI Gateway video generation returned successfully, but no supported video payload was found.",
@@ -422,6 +542,7 @@ async function executeVercelGatewayVideoRender(
           delivery: extraction.video.url ? "external-url" : "base64-data-url",
           extractionPath: extraction.path,
         },
+        v19: buildContinuityLockMetadata(packet, "video"),
       },
       error: null,
     };
@@ -446,6 +567,7 @@ async function executeVercelGatewayVideoRender(
           completionRuntime: "exception",
           message: error instanceof Error ? error.message : String(error),
         },
+        v19: buildContinuityLockMetadata(packet, "video"),
       },
       error:
         error instanceof Error
@@ -699,8 +821,12 @@ function buildGatewayVideoPrompt(packet: Record<string, unknown>) {
 
   return [
     "Create a short cinematic 16:9 video clip from this governed SolaceFrame runtime packet.",
+    getPrimaryVisualAnchor(packet)
+      ? "Use the provided reference image as the visual continuity anchor. Preserve the person, wardrobe silhouette, object geometry, lighting family, and environment from the reference frame. Animate the frame rather than redesigning the scene."
+      : "No visual anchor is available; obey the textual continuity locks with maximum consistency.",
     "Use one continuous shot unless the packet explicitly permits a transition.",
-    "Preserve continuity exactly: character identity, appearance anchors, carried objects, injuries, environmental damage, branch state, lighting, and object positions must stay consistent across the clip.",
+    "Preserve continuity exactly: character identity, face family, hair color, wardrobe silhouette, carried yellow courier case, left-arm injury behavior, environmental damage, branch state, lighting, and object positions must stay consistent across the clip.",
+    "Hard locks: Elena keeps the same visual identity; the yellow courier case remains visibly yellow and consistently shaped; the bridge/location remains damaged and rainy unless a repair event exists; do not convert the environment into a different city/bridge type.",
     "Do not introduce unsupported characters, locations, repairs, labels, logos, captions, UI overlays, or text in-frame.",
     "Motion direction: slow cinematic movement, physical realism, rain/environment continuity, visible tension, and clear causal consequence propagation.",
     "Primary scene prompt:",
@@ -723,6 +849,8 @@ function buildGatewayVideoPrompt(packet: Record<string, unknown>) {
     ),
     "Characters and continuity anchors:",
     JSON.stringify(characters, null, 2),
+    "Visual continuity anchors:",
+    JSON.stringify((continuity?.visualAnchors as Record<string, unknown> | undefined) ?? {}, null, 2),
     "Recent causal events:",
     JSON.stringify(causalEvents, null, 2),
     "Governance constraints:",
@@ -767,6 +895,9 @@ function buildGatewayImagePrompt(
     "This is not concept art detached from state. It is a governed render of the exact runtime packet.",
     "No logos, no captions, no UI overlays, no text labels, and no placeholder graphics in the generated image.",
     "Visual style: sophisticated cinematic realism, high detail, coherent lighting, practical environment design, persistent objects, no surreal artifacts unless required by the runtime state.",
+    getPrimaryVisualAnchor(packet)
+      ? "Continuity anchor present: preserve the approved visual anchor as the dominant identity/environment reference. Do not redesign the character, jacket, yellow case, damaged bridge, weather, or camera language unless the runtime packet explicitly authorizes a branch divergence."
+      : "No approved visual anchor is present; obey the textual continuity locks and avoid redesigning core identity or environment across outputs.",
     "Primary scene prompt:",
     prompt,
     "Runtime world:",
@@ -787,6 +918,8 @@ function buildGatewayImagePrompt(
     ),
     "Characters and continuity anchors:",
     JSON.stringify(characters, null, 2),
+    "Visual continuity anchors:",
+    JSON.stringify((continuity?.visualAnchors as Record<string, unknown> | undefined) ?? {}, null, 2),
     "Recent causal events:",
     JSON.stringify(causalEvents, null, 2),
     "Governance constraints:",
