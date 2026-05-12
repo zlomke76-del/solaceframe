@@ -79,7 +79,6 @@ export default function Page() {
   const worldState = useMemo(() => runtime?.world?.state ?? {}, [runtime]);
   const latestDiff = runtime?.continuityDiffs?.[0] ?? null;
   const latestJob = runtime?.renderJobs?.[0] ?? null;
-  const latestArtifact = runtime?.artifacts?.[0] ?? null;
   const unresolvedContradictions = runtime?.contradictions?.filter((item) => !item.resolved) ?? [];
   const report = runtime?.admissibilityReport;
   const activeBranch = runtime?.activeBranch;
@@ -398,27 +397,60 @@ export default function Page() {
                 <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
               </div>
 
-              {latestArtifact?.public_url && latestArtifact.mime_type?.startsWith("image/") ? (
-                <div className="sf-artifact-preview">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={latestArtifact.public_url} alt="Latest SolaceFrame artifact" />
-                </div>
-              ) : null}
-
               <div className="sf-stack">
-                {runtime.artifacts.map((artifact) => (
-                  <div className="sf-row-card" key={artifact.id}>
-                    <div className="sf-row">
-                      <strong>{artifact.artifact_type}</strong>
-                      <span>{artifact.mime_type ?? "metadata"}</span>
+                {runtime.artifacts.map((artifact) => {
+                  const publicUrl = artifact.public_url ?? "";
+                  const mimeType = artifact.mime_type ?? "metadata";
+                  const isImage = mimeType.startsWith("image/");
+                  const isVideo = mimeType.startsWith("video/");
+                  const isDataUrl = publicUrl.startsWith("data:");
+
+                  return (
+                    <div className="sf-row-card artifact-card" key={artifact.id}>
+                      <div className="sf-row">
+                        <strong>{artifact.artifact_type}</strong>
+                        <span>{mimeType}</span>
+                      </div>
+
+                      {publicUrl ? (
+                        <>
+                          {isImage ? (
+                            <div className="sf-artifact-preview">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={publicUrl}
+                                alt={`${artifact.artifact_type} artifact`}
+                                className="sf-artifact-image"
+                              />
+                            </div>
+                          ) : null}
+
+                          {isVideo ? (
+                            <div className="sf-artifact-preview">
+                              <video
+                                src={publicUrl}
+                                controls
+                                playsInline
+                                className="sf-artifact-video"
+                              />
+                            </div>
+                          ) : null}
+
+                          {!isImage && !isVideo ? (
+                            <div className="sf-artifact-meta">
+                              <p className="sf-break">
+                                {isDataUrl ? "Inline artifact payload persisted." : publicUrl}
+                              </p>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <p>Execution packet persisted without a public media URL.</p>
+                      )}
                     </div>
-                    {artifact.public_url ? (
-                      <p className="sf-break">{artifact.public_url}</p>
-                    ) : (
-                      <p>Execution packet persisted without a public media URL.</p>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
+
                 {runtime.artifacts.length === 0 ? (
                   <p className="sf-muted">No execution artifacts yet. Execute the latest render packet to create one.</p>
                 ) : null}
