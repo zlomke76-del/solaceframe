@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SolaceFrame V18",
+  title: "SolaceFrame V20",
   description: "Causal continuity runtime."
 };
 
