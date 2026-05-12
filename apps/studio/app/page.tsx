@@ -285,8 +285,8 @@ export default function Page() {
             "Branch Forking",
             "Contradiction Repair",
             "Causal Graph",
+            "Continuity Resolver",
             "Render Packet",
-            "Synthetic Memory",
             "Motion + Image Artifacts"
           ].map((item, index) => (
             <div className="sf-nav-item" key={item}>
@@ -304,9 +304,9 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V22 · Async Video Continuity Runtime</div>
+            <div className="sf-eyebrow">SolaceFrame V25 · Continuity Resolution Runtime</div>
             <h1 className="sf-title">
-              Submit video jobs asynchronously, preserve branch continuity under provider delay, and reconcile motion artifacts before admission.
+              Resolve canonical memory into scene-local render constraints before execution, keeping dormant facts true without flooding the provider.
             </h1>
             <div className="sf-scenario-line">Active scenario: <strong>{scenarioTitle}</strong></div>
           </div>
@@ -323,7 +323,7 @@ export default function Page() {
             <section className="sf-card sf-scenario-card">
               <div className="sf-card-head">
                 <div>
-                  <div className="sf-eyebrow">V22 Scenario Control</div>
+                  <div className="sf-eyebrow">V25 Scenario Control</div>
                   <h2>Start fresh without destroying continuity history</h2>
                 </div>
                 <div className="sf-branch-pill">{runtime.world.name}</div>
@@ -568,46 +568,6 @@ export default function Page() {
 
             <div className="sf-grid">
               <section className="sf-card">
-                <div className="sf-eyebrow">V24 Synthetic Memory</div>
-                <h2>Persistent consequence state</h2>
-                <div className="sf-factor-grid">
-                  <Metric label="Physical" value={memoryValue(worldState, "physicalState")} />
-                  <Metric label="Environment" value={memoryValue(worldState, "environmentalState")} />
-                  <Metric label="Objects" value={memoryValue(worldState, "objectState")} />
-                  <Metric label="Spatial" value={memoryValue(worldState, "spatialState")} />
-                </div>
-                <div className="sf-chip-wrap">
-                  {getV24RenderConstraints(worldState).map((item) => (
-                    <span className="sf-chip gold" key={item}>{item}</span>
-                  ))}
-                </div>
-                <pre className="sf-code small">{JSON.stringify(getV24MemoryView(worldState), null, 2)}</pre>
-              </section>
-
-              <section className="sf-card">
-                <div className="sf-eyebrow">Anatomical Persistence</div>
-                <h2>Scars, tattoos, bandages, and recovery</h2>
-                <div className="sf-stack compact">
-                  {runtime.characters.flatMap((character) =>
-                    getAnatomicalMarkers(character.state).map((marker) => (
-                      <div className="sf-row-card" key={`${character.id}:${marker.id}`}>
-                        <div className="sf-row">
-                          <strong>{character.name} · {String(marker.kind)}</strong>
-                          <span>{String(marker.bodyRegion)} · {String(marker.status)}</span>
-                        </div>
-                        <p className="sf-muted">{String(marker.permanence)} · visibility {String(marker.visibility)} · severity {String(marker.severity)}</p>
-                      </div>
-                    ))
-                  )}
-                  {runtime.characters.every((character) => getAnatomicalMarkers(character.state).length === 0) ? (
-                    <p className="sf-muted">No anatomical markers locked yet. Mention a scar, tattoo, cut, bruise, burn, or bandage in a governed scene to persist it.</p>
-                  ) : null}
-                </div>
-              </section>
-            </div>
-
-            <div className="sf-grid">
-              <section className="sf-card">
                 <div className="sf-eyebrow">Causal Graph</div>
                 <div className="sf-stack">
                   {runtime.causalEvents.map((event) => (
@@ -632,11 +592,6 @@ export default function Page() {
                       <div className="sf-row">
                         <strong>{character.name}</strong>
                         <span>{character.continuity_score}% continuity</span>
-                      </div>
-                      <div className="sf-chip-wrap">
-                        <span className="sf-chip blue">hair: {stateSummary(character.state, "hairState")}</span>
-                        <span className="sf-chip gold">body markers: {getAnatomicalMarkers(character.state).length}</span>
-                        <span className="sf-chip green">recovery: {stateSummary(character.state, "recoveryState")}</span>
                       </div>
                       <pre className="sf-code small">{JSON.stringify(character.state, null, 2)}</pre>
                     </div>
@@ -690,6 +645,16 @@ export default function Page() {
                         </p>
                       ) : null}
                     </div>
+
+                    {getContinuityResolution(latestJob.packet) ? (
+                      <div className="sf-row-card">
+                        <div className="sf-row">
+                          <strong>V25 continuity resolution</strong>
+                          <span>{String(getContinuityResolution(latestJob.packet)?.version ?? "active")}</span>
+                        </div>
+                        <pre className="sf-code small">{JSON.stringify(getContinuityResolution(latestJob.packet), null, 2)}</pre>
+                      </div>
+                    ) : null}
 
                     <div className="sf-action-row">
                       <button
@@ -891,6 +856,13 @@ export default function Page() {
 }
 
 
+function getContinuityResolution(packet: Record<string, unknown> | null | undefined) {
+  const value = packet?.continuityResolution;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function isContinuityAnchor(metadata: Record<string, unknown>) {
   const v19 = metadata.v19;
   return Boolean(v19 && typeof v19 === "object" && (v19 as Record<string, unknown>).continuityAnchor === true);
@@ -901,49 +873,6 @@ function getV19ContinuityScore(metadata: Record<string, unknown>) {
   if (!v19 || typeof v19 !== "object") return null;
   const score = (v19 as Record<string, unknown>).continuityScore;
   return typeof score === "number" ? score : null;
-}
-
-function getV24MemoryView(worldState: Record<string, unknown>) {
-  return {
-    syntheticMemory: safeRecord(worldState.syntheticMemory),
-    physicalState: safeRecord(worldState.physicalState),
-    environmentalState: safeRecord(worldState.environmentalState),
-    objectState: safeRecord(worldState.objectState),
-    spatialState: safeRecord(worldState.spatialState),
-  };
-}
-
-function getV24RenderConstraints(worldState: Record<string, unknown>) {
-  const syntheticMemory = safeRecord(worldState.syntheticMemory);
-  const constraints = syntheticMemory.renderConstraints;
-  return Array.isArray(constraints) ? constraints.map(String).slice(0, 6) : [];
-}
-
-function safeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function memoryValue(worldState: Record<string, unknown>, key: string) {
-  const value = safeRecord(worldState[key]);
-  const activeKeys = Object.keys(value).filter((item) => value[item] !== undefined && value[item] !== null);
-  return activeKeys.length ? `${activeKeys.length} active` : "pending";
-}
-
-function getAnatomicalMarkers(characterState: Record<string, unknown>) {
-  const anatomicalState = safeRecord(characterState.anatomicalState);
-  const markers = anatomicalState.markers;
-  return Array.isArray(markers) ? markers.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
-}
-
-function stateSummary(characterState: Record<string, unknown>, key: string) {
-  const value = safeRecord(characterState[key]);
-  const keys = Object.keys(value);
-  if (!keys.length) return "pending";
-  if (typeof value.style === "string" || typeof value.moistureState === "string") {
-    return [value.style, value.moistureState].filter(Boolean).join("/") || "active";
-  }
-  if (typeof value.lastRecoveryScene === "string") return "active";
-  return `${keys.length} fields`;
 }
 
 function getV22MotionAdmission(metadata: Record<string, unknown>) {
