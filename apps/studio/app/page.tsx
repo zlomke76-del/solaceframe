@@ -116,9 +116,9 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V18.1 · Video Completion Runtime</div>
+            <div className="sf-eyebrow">SolaceFrame V19 · Continuity Lock Runtime</div>
             <h1 className="sf-title">
-              Governed runtime packets now complete into storage-backed images, storyboards, and video artifacts with provider-shape extraction.
+              Approved artifacts can now become visual continuity anchors for image-to-video and cross-output identity locking.
             </h1>
           </div>
 
@@ -181,7 +181,7 @@ export default function Page() {
 
                 <p className="sf-muted">
                   Persists scene state, causal events, contradictions, continuity diffs, branch pressure,
-                  lineage, admissibility and a V18.1-ready render execution packet.
+                  lineage, admissibility and a V19 continuity-lock render execution packet.
                 </p>
               </section>
 
@@ -393,7 +393,7 @@ export default function Page() {
               <div className="sf-card-head">
                 <div>
                   <div className="sf-eyebrow">Execution Artifacts</div>
-                  <h2>Storage-backed generated outputs, video clips, and provider returns</h2>
+                  <h2>Storage-backed outputs with visual continuity anchors</h2>
                 </div>
                 <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
               </div>
@@ -414,12 +414,14 @@ export default function Page() {
                   const isImage = artifact.mime_type?.startsWith("image/");
                   const isVideo = artifact.mime_type?.startsWith("video/");
                   const isInlinePayload = artifact.public_url?.startsWith("data:");
+                  const anchorLocked = isContinuityAnchor(artifact.metadata);
+                  const continuityScore = getV19ContinuityScore(artifact.metadata);
 
                   return (
-                    <div className="sf-row-card artifact-card" key={artifact.id}>
+                    <div className={`sf-row-card artifact-card ${anchorLocked ? "continuity-anchor" : ""}`} key={artifact.id}>
                       <div className="sf-row">
                         <strong>{artifact.artifact_type}</strong>
-                        <span>{artifact.mime_type ?? "metadata"}</span>
+                        <span>{anchorLocked ? "Continuity Anchor" : artifact.mime_type ?? "metadata"}</span>
                       </div>
 
                       {artifact.public_url ? (
@@ -450,8 +452,32 @@ export default function Page() {
                             <span className="sf-chip green">
                               {artifact.storage_path ? "Supabase Storage" : isInlinePayload ? "Inline payload" : "External URL"}
                             </span>
+                            {anchorLocked ? <span className="sf-chip gold">Visual anchor locked</span> : null}
+                            {continuityScore !== null ? <span className="sf-chip blue">{continuityScore}% continuity</span> : null}
                             {artifact.storage_path ? (
                               <span className="sf-chip blue">{artifact.storage_path}</span>
+                            ) : null}
+                            {(isImage || isVideo) && artifact.public_url ? (
+                              <button
+                                className="sf-mini"
+                                onClick={() =>
+                                  void runRuntimeAction(
+                                    {
+                                      action: "set_continuity_anchor",
+                                      artifactId: artifact.id,
+                                      reason: "Operator approved this artifact as the visual continuity anchor for future renders."
+                                    },
+                                    `anchor:${artifact.id}`
+                                  )
+                                }
+                                disabled={Boolean(busy) || anchorLocked}
+                              >
+                                {busy === `anchor:${artifact.id}`
+                                  ? "Locking Anchor..."
+                                  : anchorLocked
+                                    ? "Anchor Locked"
+                                    : "Set as Continuity Anchor"}
+                              </button>
                             ) : null}
                             {!isImage && !isVideo ? (
                               <p className="sf-muted">
@@ -477,6 +503,19 @@ export default function Page() {
       </section>
     </main>
   );
+}
+
+
+function isContinuityAnchor(metadata: Record<string, unknown>) {
+  const v19 = metadata.v19;
+  return Boolean(v19 && typeof v19 === "object" && (v19 as Record<string, unknown>).continuityAnchor === true);
+}
+
+function getV19ContinuityScore(metadata: Record<string, unknown>) {
+  const v19 = metadata.v19;
+  if (!v19 || typeof v19 !== "object") return null;
+  const score = (v19 as Record<string, unknown>).continuityScore;
+  return typeof score === "number" ? score : null;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
