@@ -79,6 +79,7 @@ export default function Page() {
   const worldState = useMemo(() => runtime?.world?.state ?? {}, [runtime]);
   const latestDiff = runtime?.continuityDiffs?.[0] ?? null;
   const latestJob = runtime?.renderJobs?.[0] ?? null;
+  const latestArtifact = runtime?.artifacts?.[0] ?? null;
   const unresolvedContradictions = runtime?.contradictions?.filter((item) => !item.resolved) ?? [];
   const report = runtime?.admissibilityReport;
   const activeBranch = runtime?.activeBranch;
@@ -97,7 +98,8 @@ export default function Page() {
             "Branch Forking",
             "Contradiction Repair",
             "Causal Graph",
-            "Render Packet"
+            "Render Packet",
+            "Execution Artifacts"
           ].map((item, index) => (
             <div className="sf-nav-item" key={item}>
               <span>{String(index + 1).padStart(2, "0")}</span>
@@ -114,9 +116,9 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V14 · Runtime Governance Delta</div>
+            <div className="sf-eyebrow">SolaceFrame V15 · Execution Layer Delta</div>
             <h1 className="sf-title">
-              Admissibility now governs branch forks, repairs, and render packet execution.
+              Governed runtime packets can now execute into image, video, or storyboard artifacts.
             </h1>
           </div>
 
@@ -179,7 +181,7 @@ export default function Page() {
 
                 <p className="sf-muted">
                   Persists scene state, causal events, contradictions, continuity diffs, branch pressure,
-                  lineage, admissibility and render job packet.
+                  lineage, admissibility and a V15-ready render execution packet.
                 </p>
               </section>
 
@@ -324,12 +326,105 @@ export default function Page() {
               <section className="sf-card">
                 <div className="sf-eyebrow">Latest Render Packet</div>
                 {latestJob ? (
-                  <pre className="sf-code">{JSON.stringify(latestJob.packet, null, 2)}</pre>
+                  <>
+                    <div className="sf-row-card">
+                      <div className="sf-row">
+                        <strong>{latestJob.status}</strong>
+                        <span>{latestJob.model_route ?? "pending route"}</span>
+                      </div>
+                      {latestJob.output_url ? (
+                        <p>Artifact URL persisted.</p>
+                      ) : (
+                        <p>Queued packet awaiting governed execution.</p>
+                      )}
+                    </div>
+
+                    <div className="sf-action-row">
+                      <button
+                        className="sf-primary"
+                        onClick={() =>
+                          void runRuntimeAction(
+                            { action: "execute_render_job", renderJobId: latestJob.id, outputKind: "image" },
+                            "execute:image"
+                          )
+                        }
+                        disabled={Boolean(busy) || latestJob.status === "blocked"}
+                      >
+                        {busy === "execute:image" ? "Executing Image..." : "Execute Image"}
+                      </button>
+
+                      <button
+                        className="sf-primary subtle"
+                        onClick={() =>
+                          void runRuntimeAction(
+                            { action: "execute_render_job", renderJobId: latestJob.id, outputKind: "storyboard" },
+                            "execute:storyboard"
+                          )
+                        }
+                        disabled={Boolean(busy) || latestJob.status === "blocked"}
+                      >
+                        {busy === "execute:storyboard" ? "Executing Storyboard..." : "Execute Storyboard"}
+                      </button>
+
+                      <button
+                        className="sf-primary subtle"
+                        onClick={() =>
+                          void runRuntimeAction(
+                            { action: "execute_render_job", renderJobId: latestJob.id, outputKind: "video" },
+                            "execute:video"
+                          )
+                        }
+                        disabled={Boolean(busy) || latestJob.status === "blocked"}
+                      >
+                        {busy === "execute:video" ? "Executing Video..." : "Execute Video"}
+                      </button>
+                    </div>
+
+                    <pre className="sf-code">{JSON.stringify(latestJob.packet, null, 2)}</pre>
+                  </>
                 ) : (
                   <p className="sf-muted">No packet queued yet.</p>
                 )}
               </section>
             </div>
+
+
+            <section className="sf-card">
+              <div className="sf-card-head">
+                <div>
+                  <div className="sf-eyebrow">Execution Artifacts</div>
+                  <h2>Generated outputs and external renderer returns</h2>
+                </div>
+                <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
+              </div>
+
+              {latestArtifact?.public_url && latestArtifact.mime_type?.startsWith("image/") ? (
+                <div className="sf-artifact-preview">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={latestArtifact.public_url} alt="Latest SolaceFrame artifact" />
+                </div>
+              ) : null}
+
+              <div className="sf-stack">
+                {runtime.artifacts.map((artifact) => (
+                  <div className="sf-row-card" key={artifact.id}>
+                    <div className="sf-row">
+                      <strong>{artifact.artifact_type}</strong>
+                      <span>{artifact.mime_type ?? "metadata"}</span>
+                    </div>
+                    {artifact.public_url ? (
+                      <p className="sf-break">{artifact.public_url}</p>
+                    ) : (
+                      <p>Execution packet persisted without a public media URL.</p>
+                    )}
+                  </div>
+                ))}
+                {runtime.artifacts.length === 0 ? (
+                  <p className="sf-muted">No execution artifacts yet. Execute the latest render packet to create one.</p>
+                ) : null}
+              </div>
+            </section>
+
           </>
         ) : null}
       </section>
