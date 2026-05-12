@@ -60,7 +60,7 @@ export function buildExecutionPacket(job: RuntimeRenderJob, state: RuntimeState,
   }));
 
   return {
-    version: "v17-storage-backed-provider-execution-packet",
+    version: "v18-video-provider-execution-packet",
     outputKind,
     renderJobId: job.id,
     sceneId: job.scene_id,
@@ -147,7 +147,9 @@ export async function executeRenderRequest({ job, outputKind, state }: RenderExe
   if (webhookUrl) return executeWebhookRender(webhookUrl, packet, outputKind);
 
   if (shouldUseVercelGateway(outputKind)) {
-    const gatewayResult = await executeVercelGatewayRender(packet, outputKind);
+    const gatewayResult = outputKind === "video"
+      ? await executeVercelGatewayVideoRender(packet)
+      : await executeVercelGatewayRender(packet, outputKind);
     if (gatewayResult.status === "completed") return gatewayResult;
     if (process.env.SOLACEFRAME_DISABLE_PLACEHOLDER_FALLBACK === "true") return gatewayResult;
 
@@ -167,7 +169,6 @@ export async function executeRenderRequest({ job, outputKind, state }: RenderExe
 
 function shouldUseVercelGateway(outputKind: RenderOutputKind) {
   if (process.env.SOLACEFRAME_FORCE_PLACEHOLDER_RENDER === "true") return false;
-  if (outputKind === "video") return false;
   return Boolean(getGatewayApiKey());
 }
 
@@ -271,6 +272,147 @@ async function executeVercelGatewayRender(packet: Record<string, unknown>, outpu
       error: error instanceof Error ? error.message : "Unknown Vercel AI Gateway execution error."
     };
   }
+}
+
+
+async function executeVercelGatewayVideoRender(packet: Record<string, unknown>): Promise<RenderExecutionResult> {
+  const model = process.env.SOLACEFRAME_VIDEO_MODEL || "bytedance/seedance-2.0-fast";
+  const duration = Number(process.env.SOLACEFRAME_VIDEO_DURATION_SECONDS || "5");
+  const aspectRatio = process.env.SOLACEFRAME_VIDEO_ASPECT_RATIO || "16:9";
+  const resolution = process.env.SOLACEFRAME_VIDEO_RESOLUTION || undefined;
+  const prompt = buildGatewayVideoPrompt(packet);
+
+  try {
+    const ai = await Function("specifier", "return import(specifier)")("ai") as {
+      experimental_generateVideo?: (input: Record<string, unknown>) => Promise<{
+      videos?: Array<{ uint8Array?: Uint8Array; base64?: string; mediaType?: string; mimeType?: string }>;
+      response?: unknown;
+      usage?: unknown;
+      providerMetadata?: unknown;
+    }>;
+    };
+
+    const generateVideo = ai.experimental_generateVideo;
+
+    if (!generateVideo) {
+      throw new Error("AI SDK v6 experimental_generateVideo is not available. Confirm apps/studio has ai@^6 installed.");
+    }
+
+    const result = await generateVideo({
+      model,
+      prompt,
+      duration,
+      aspectRatio,
+      ...(resolution ? { resolution } : {}),
+      providerOptions: buildVideoProviderOptions(model)
+    });
+
+    const video = result.videos?.[0];
+
+    if (!video) {
+      return {
+        status: "failed",
+        provider: "vercel-ai-gateway-video",
+        providerJobId: null,
+        artifactType: "video",
+        artifactUrl: null,
+        mimeType: "application/json",
+        metadata: { packet, model, duration, aspectRatio, resolution: resolution ?? null, response: result.response ?? null, usage: result.usage ?? null, providerMetadata: result.providerMetadata ?? null },
+        error: "Vercel AI Gateway video generation returned no videos."
+      };
+    }
+
+    const mimeType = video.mediaType || video.mimeType || "video/mp4";
+    const base64 = typeof video.base64 === "string"
+      ? video.base64
+      : video.uint8Array
+      ? Buffer.from(video.uint8Array).toString("base64")
+      : null;
+
+    if (!base64) {
+      return {
+        status: "failed",
+        provider: "vercel-ai-gateway-video",
+        providerJobId: null,
+        artifactType: "video",
+        artifactUrl: null,
+        mimeType: "application/json",
+        metadata: { packet, model, duration, aspectRatio, resolution: resolution ?? null, response: result.response ?? null, usage: result.usage ?? null, providerMetadata: result.providerMetadata ?? null },
+        error: "Vercel AI Gateway video generation returned a video without base64 or byte data."
+      };
+    }
+
+    return {
+      status: "completed",
+      provider: "vercel-ai-gateway-video",
+      providerJobId: null,
+      artifactType: "video",
+      artifactUrl: `data:${mimeType};base64,${base64}`,
+      mimeType,
+      metadata: {
+        packet,
+        model,
+        duration,
+        aspectRatio,
+        resolution: resolution ?? null,
+        v18: {
+          providerClass: "ai-gateway-video",
+          storageBacked: true,
+          executionMode: "synchronous-video-generation"
+        },
+        response: result.response ?? null,
+        usage: result.usage ?? null,
+        providerMetadata: result.providerMetadata ?? null
+      },
+      error: null
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      provider: "vercel-ai-gateway-video",
+      providerJobId: null,
+      artifactType: "video",
+      artifactUrl: null,
+      mimeType: "application/json",
+      metadata: { packet, model, duration, aspectRatio, resolution: resolution ?? null },
+      error: error instanceof Error ? error.message : "Unknown Vercel AI Gateway video execution error."
+    };
+  }
+}
+
+function buildVideoProviderOptions(model: string) {
+  if (model.startsWith("klingai/")) return { klingai: { mode: process.env.SOLACEFRAME_KLING_MODE || "pro", sound: process.env.SOLACEFRAME_VIDEO_SOUND || "off" } };
+  if (model.startsWith("alibaba/")) return { alibaba: { sound: process.env.SOLACEFRAME_VIDEO_SOUND || "off" } };
+  if (model.startsWith("bytedance/")) return { bytedance: { sound: process.env.SOLACEFRAME_VIDEO_SOUND || "off" } };
+  if (model.startsWith("xai/")) return { xai: { audio: process.env.SOLACEFRAME_VIDEO_SOUND === "on" } };
+  return {};
+}
+
+function buildGatewayVideoPrompt(packet: Record<string, unknown>) {
+  const continuity = packet.continuity as Record<string, unknown> | undefined;
+  const world = continuity?.world as { name?: string; pressure?: number; state?: unknown } | undefined;
+  const branch = continuity?.activeBranch as { name?: string; divergence_score?: number; status?: string } | undefined;
+  const characters = Array.isArray(continuity?.characters) ? continuity.characters : [];
+  const causalEvents = Array.isArray(continuity?.causalEvents) ? continuity.causalEvents.slice(0, 12) : [];
+  const governance = packet.governance as Record<string, unknown> | undefined;
+  const rendering = packet.rendering as Record<string, unknown> | undefined;
+  const compiledPacket = packet.compiledPacket as Record<string, unknown> | undefined;
+  const prompt = String(packet.prompt ?? rendering?.prompt ?? "Render the governed runtime state as a short continuous video.");
+
+  return [
+    "Create a short cinematic 16:9 video clip from this governed SolaceFrame runtime packet.",
+    "Use one continuous shot unless the packet explicitly permits a transition.",
+    "Preserve continuity exactly: character identity, appearance anchors, carried objects, injuries, environmental damage, branch state, lighting, and object positions must stay consistent across the clip.",
+    "Do not introduce unsupported characters, locations, repairs, labels, logos, captions, UI overlays, or text in-frame.",
+    "Motion direction: slow cinematic movement, physical realism, rain/environment continuity, visible tension, and clear causal consequence propagation.",
+    "Primary scene prompt:", prompt,
+    "Runtime world:", JSON.stringify({ name: world?.name, pressure: world?.pressure, state: world?.state }, null, 2),
+    "Active branch:", JSON.stringify({ name: branch?.name, status: branch?.status, divergence: branch?.divergence_score }, null, 2),
+    "Characters and continuity anchors:", JSON.stringify(characters, null, 2),
+    "Recent causal events:", JSON.stringify(causalEvents, null, 2),
+    "Governance constraints:", JSON.stringify(governance, null, 2),
+    "Compiled render packet:", JSON.stringify(compiledPacket ?? {}, null, 2)
+  ].join("\n\n");
 }
 
 function buildGatewayImagePrompt(packet: Record<string, unknown>, outputKind: RenderOutputKind) {
@@ -423,9 +565,9 @@ function buildPlaceholderSvgDataUrl(packet: Record<string, unknown>) {
   <defs><radialGradient id="g1" cx="20%" cy="10%" r="80%"><stop offset="0" stop-color="#facc15" stop-opacity=".35"/><stop offset=".45" stop-color="#0f172a"/><stop offset="1" stop-color="#020617"/></radialGradient><linearGradient id="g2" x1="0" x2="1"><stop offset="0" stop-color="#22c55e"/><stop offset=".55" stop-color="#facc15"/><stop offset="1" stop-color="#ef4444"/></linearGradient></defs>
   <rect width="1280" height="720" fill="url(#g1)"/><g opacity=".24" stroke="#ffffff" stroke-width="1"><path d="M90 560 C330 310 520 620 750 390 S1030 330 1190 145" fill="none"/><path d="M130 150 C330 300 510 100 690 235 S940 470 1160 360" fill="none"/></g>
   <rect x="72" y="72" width="1136" height="576" rx="36" fill="#020617" opacity=".74" stroke="#ffffff" stroke-opacity=".14"/>
-  <text x="112" y="142" fill="#facc15" font-size="20" font-family="Arial" font-weight="700" letter-spacing="5">SOLACEFRAME V17 EXECUTION ARTIFACT</text><text x="112" y="224" fill="#ffffff" font-size="56" font-family="Arial" font-weight="900">${title}</text><text x="112" y="282" fill="#cbd5e1" font-size="26" font-family="Arial">Governed fallback render · no live image provider response was used</text>
+  <text x="112" y="142" fill="#facc15" font-size="20" font-family="Arial" font-weight="700" letter-spacing="5">SOLACEFRAME V18 EXECUTION ARTIFACT</text><text x="112" y="224" fill="#ffffff" font-size="56" font-family="Arial" font-weight="900">${title}</text><text x="112" y="282" fill="#cbd5e1" font-size="26" font-family="Arial">Governed fallback render · no live image provider response was used</text>
   <rect x="112" y="360" width="600" height="22" rx="11" fill="#ffffff" opacity=".12"/><rect x="112" y="360" width="${barWidth}" height="22" rx="11" fill="url(#g2)"/>
-  <text x="112" y="438" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">World pressure: ${pressure}%</text><text x="112" y="492" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Branch: ${branchName}</text><text x="112" y="546" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Divergence: ${divergence}%</text><text x="112" y="610" fill="#94a3b8" font-size="20" font-family="Arial">V17 stores generated media in Supabase Storage and returns durable artifact URLs.</text>
+  <text x="112" y="438" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">World pressure: ${pressure}%</text><text x="112" y="492" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Branch: ${branchName}</text><text x="112" y="546" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Divergence: ${divergence}%</text><text x="112" y="610" fill="#94a3b8" font-size="20" font-family="Arial">V18 routes image, storyboard, and video execution through governed provider surfaces.</text>
 </svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }

@@ -1,8 +1,7 @@
 export type Admissibility = "allow" | "conditional" | "blocked";
-export type RenderOutputKind = "image" | "video" | "storyboard";
-export type RenderExecutionStatus = "queued" | "running" | "completed" | "failed" | "blocked";
 export type DriftRisk = "low" | "medium" | "high";
 export type CausalReversibility = "reversible" | "repairable" | "irreversible";
+export type RenderOutputKind = "image" | "video" | "storyboard";
 
 export type RuntimeProject = {
   id: string;
@@ -59,33 +58,22 @@ export type RuntimeRenderJob = {
   project_id: string;
   scene_id: string | null;
   branch_id: string | null;
-  status: RenderExecutionStatus | string;
+  status: string;
   model_route: string | null;
   prompt: string;
   packet: Record<string, unknown>;
-  output_kind?: RenderOutputKind | null;
+  error: string | null;
+  output_url?: string | null;
+  output_kind?: RenderOutputKind | string | null;
   execution_mode?: string | null;
   provider?: string | null;
   provider_job_id?: string | null;
-  output_url?: string | null;
   artifact_id?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
-  error: string | null;
-  created_at: string;
-};
-
-export type RuntimeArtifact = {
-  id: string;
-  project_id: string;
-  scene_id: string | null;
-  render_job_id: string | null;
-  branch_id: string | null;
-  artifact_type: RenderOutputKind | string;
-  storage_path: string | null;
-  public_url: string | null;
-  mime_type: string | null;
-  metadata: Record<string, unknown>;
+  progress_status?: string | null;
+  progress_percent?: number | null;
+  provider_payload?: Record<string, unknown> | null;
   created_at: string;
 };
 
@@ -161,6 +149,25 @@ export type RuntimeAdmissibilityReport = {
   requiredRepairs: string[];
 };
 
+
+export type RuntimeArtifact = {
+  id: string;
+  project_id: string;
+  scene_id: string | null;
+  render_job_id: string | null;
+  branch_id: string | null;
+  artifact_type: RenderOutputKind | string;
+  storage_path?: string | null;
+  public_url?: string | null;
+  mime_type?: string | null;
+  provider?: string | null;
+  provider_job_id?: string | null;
+  duration_seconds?: number | null;
+  poster_url?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
 export type RuntimeState = {
   project: RuntimeProject;
   world: RuntimeWorld;
@@ -169,10 +176,10 @@ export type RuntimeState = {
   characters: RuntimeCharacter[];
   scenes: RuntimeScene[];
   renderJobs: RuntimeRenderJob[];
-  artifacts: RuntimeArtifact[];
   lineageEvents: RuntimeLineageEvent[];
   continuityDiffs: RuntimeContinuityDiff[];
   causalEvents: RuntimeCausalEvent[];
   contradictions: RuntimeContradiction[];
+  artifacts: RuntimeArtifact[];
   admissibilityReport: RuntimeAdmissibilityReport;
 };
