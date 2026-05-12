@@ -23,8 +23,7 @@ type RuntimeAction =
   | "compile_scene"
   | "fork_branch"
   | "resolve_contradiction"
-  | "execute_render_job"
-  | "set_continuity_anchor";
+  | "execute_render_job";
 
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
@@ -84,10 +83,6 @@ export async function POST(request: Request) {
 
     if (action === "execute_render_job") {
       return await executeRenderJob(body);
-    }
-
-    if (action === "set_continuity_anchor") {
-      return await setContinuityAnchor(body);
     }
 
     return await compileScene(body);
@@ -361,73 +356,79 @@ async function executeRenderJob(body: Record<string, unknown>) {
   if (runningError) throw runningError;
 
   const execution = await executeRenderRequest({ job, outputKind, state });
+  const completedAt = new Date().toISOString();
 
   if (execution.status !== "completed") {
-    const failedAt = new Date().toISOString();
-    const progressStatus =
-      outputKind === "video"
-        ? "video-provider-failed"
-        : `${outputKind}-provider-failed`;
-
-    const { error: failedJobError } = await supabase
+    const { error: jobError } = await supabase
       .from("render_jobs")
       .update({
         status: execution.status,
         model_route: execution.provider,
         provider: execution.provider,
         provider_job_id: execution.providerJobId,
-        completed_at: failedAt,
-        progress_status: progressStatus,
+        output_url: null,
+        artifact_id: null,
+        completed_at: completedAt,
+        progress_status:
+          execution.status === "blocked"
+            ? "blocked-by-admissibility"
+            : "provider-failed-no-artifact-admitted",
         progress_percent: 0,
         provider_payload: {
           provider: execution.provider,
           providerJobId: execution.providerJobId,
           outputKind,
+          artifactUrlPersisted: false,
+          mimeType: execution.mimeType,
           error: execution.error,
           metadata: execution.metadata,
-          noArtifactPersisted: true,
-          reason: "Provider execution failed or returned no media payload; runtime refused to create metadata-only artifact.",
+          v192: {
+            artifactAdmitted: false,
+            reason:
+              "Failed or blocked executions are recorded on the render job and lineage only. No metadata-only artifact card is admitted into the artifact gallery.",
+          },
         },
         error: execution.error,
       })
       .eq("id", job.id);
 
-    if (failedJobError) throw failedJobError;
+    if (jobError) throw jobError;
 
-    const { error: failedLineageError } = await supabase
-      .from("lineage_events")
-      .insert({
-        project_id: projectId,
-        scene_id: job.scene_id,
-        render_job_id: job.id,
-        event_type: `${outputKind}-render-failed`,
-        summary: `${outputKind} render failed before media artifact creation: ${execution.error ?? "unknown provider failure"}`,
-        payload: {
-          renderJobId: job.id,
-          provider: execution.provider,
-          providerJobId: execution.providerJobId,
-          outputKind,
-          startedAt,
-          completedAt: failedAt,
-          error: execution.error,
-          metadata: execution.metadata,
-          noArtifactPersisted: true,
-        },
-      });
+    const { error: lineageError } = await supabase.from("lineage_events").insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      event_type:
+        execution.status === "blocked" ? "render-blocked" : "render-failed",
+      summary: `Render job ${execution.status}: ${outputKind}`,
+      payload: {
+        renderJobId: job.id,
+        artifactId: null,
+        provider: execution.provider,
+        providerJobId: execution.providerJobId,
+        outputKind,
+        startedAt,
+        completedAt,
+        error: execution.error,
+        metadata: execution.metadata,
+        artifactAdmitted: false,
+      },
+    });
 
-    if (failedLineageError) throw failedLineageError;
+    if (lineageError) throw lineageError;
 
     const nextState = await loadRuntimeState(projectId);
     return NextResponse.json(
       {
         ok: false,
-        error: execution.error || `${outputKind} provider execution failed.`,
+        error: execution.error || `Render job ${execution.status}`,
         execution,
         state: nextState,
       },
-      { status: 502 },
+      { status: execution.status === "blocked" ? 409 : 502 },
     );
   }
+
   const persistedMedia = await persistExecutionMedia({
     projectId,
     renderJobId: job.id,
@@ -435,7 +436,68 @@ async function executeRenderJob(body: Record<string, unknown>) {
     artifactUrl: execution.artifactUrl,
     mimeType: execution.mimeType,
   });
-  const completedAt = new Date().toISOString();
+
+  if (!persistedMedia.publicUrl) {
+    const { error: jobError } = await supabase
+      .from("render_jobs")
+      .update({
+        status: "failed",
+        model_route: execution.provider,
+        provider: execution.provider,
+        provider_job_id: execution.providerJobId,
+        output_url: null,
+        artifact_id: null,
+        completed_at: completedAt,
+        progress_status: "provider-completed-without-public-media-url",
+        progress_percent: 0,
+        provider_payload: {
+          provider: execution.provider,
+          providerJobId: execution.providerJobId,
+          outputKind,
+          artifactUrlPersisted: false,
+          mimeType: persistedMedia.mimeType,
+          error: "Provider completed but no public media URL was available to admit as an artifact.",
+          metadata: execution.metadata,
+        },
+        error: "Provider completed but no public media URL was available to admit as an artifact.",
+      })
+      .eq("id", job.id);
+
+    if (jobError) throw jobError;
+
+    const { error: lineageError } = await supabase.from("lineage_events").insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      event_type: "render-failed",
+      summary: `Render job failed: ${outputKind}`,
+      payload: {
+        renderJobId: job.id,
+        artifactId: null,
+        provider: execution.provider,
+        providerJobId: execution.providerJobId,
+        outputKind,
+        startedAt,
+        completedAt,
+        error: "Provider completed but no public media URL was available to admit as an artifact.",
+        metadata: execution.metadata,
+        artifactAdmitted: false,
+      },
+    });
+
+    if (lineageError) throw lineageError;
+
+    const nextState = await loadRuntimeState(projectId);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Provider completed but no public media URL was available to admit as an artifact.",
+        execution,
+        state: nextState,
+      },
+      { status: 502 },
+    );
+  }
 
   const { data: artifact, error: artifactError } = await supabase
     .from("artifacts")
@@ -470,16 +532,10 @@ async function executeRenderJob(body: Record<string, unknown>) {
           finalMimeType: persistedMedia.mimeType,
           finalStatus: execution.status,
         },
-        v19: {
-          ...(typeof execution.metadata?.v19 === "object" && execution.metadata.v19 !== null
-            ? (execution.metadata.v19 as Record<string, unknown>)
-            : {}),
-          continuityLockEvaluated: true,
-          canPromoteToAnchor:
-            execution.status === "completed" &&
-            Boolean(persistedMedia.publicUrl) &&
-            Boolean(persistedMedia.mimeType?.startsWith("image/") || persistedMedia.mimeType?.startsWith("video/")),
-          promotedByDefault: false,
+        v192: {
+          artifactAdmitted: true,
+          reason:
+            "Only completed executions with a public media URL are admitted into the artifact gallery.",
         },
       },
     })
@@ -498,11 +554,8 @@ async function executeRenderJob(body: Record<string, unknown>) {
       output_url: persistedMedia.publicUrl,
       artifact_id: artifact.id,
       completed_at: completedAt,
-      progress_status:
-        execution.status === "completed"
-          ? "completed"
-          : "metadata-only-or-failed",
-      progress_percent: execution.status === "completed" ? 100 : 0,
+      progress_status: "completed",
+      progress_percent: 100,
       provider_payload: {
         provider: execution.provider,
         providerJobId: execution.providerJobId,
@@ -522,11 +575,8 @@ async function executeRenderJob(body: Record<string, unknown>) {
     project_id: projectId,
     scene_id: job.scene_id,
     render_job_id: job.id,
-    event_type:
-      execution.status === "completed"
-        ? "render-executed"
-        : `render-${execution.status}`,
-    summary: `Render job ${execution.status}: ${outputKind}`,
+    event_type: "render-executed",
+    summary: `Render job completed: ${outputKind}`,
     payload: {
       renderJobId: job.id,
       artifactId: artifact.id,
@@ -536,6 +586,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
       startedAt,
       completedAt,
       error: execution.error,
+      artifactAdmitted: true,
     },
   });
 
@@ -552,110 +603,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
     artifact,
     state: nextState,
   });
-}
 
-
-async function setContinuityAnchor(body: Record<string, unknown>) {
-  const artifactId = String(body.artifactId || "").trim();
-
-  if (!artifactId) {
-    return NextResponse.json(
-      { ok: false, error: "artifactId is required" },
-      { status: 400 },
-    );
-  }
-
-  const projectId = await ensureSeedRuntime();
-  const supabase = getSupabaseAdmin().schema("solaceframe");
-  const state = await loadRuntimeState(projectId);
-  const selected = state.artifacts.find((artifact) => artifact.id === artifactId);
-
-  if (!selected) {
-    return NextResponse.json(
-      { ok: false, error: "Artifact not found in active runtime" },
-      { status: 404 },
-    );
-  }
-
-  if (!selected.public_url || !(selected.mime_type?.startsWith("image/") || selected.mime_type?.startsWith("video/"))) {
-    return NextResponse.json(
-      { ok: false, error: "Only public image/video artifacts can become continuity anchors" },
-      { status: 409 },
-    );
-  }
-
-  for (const artifact of state.artifacts) {
-    const previousMetadata = artifact.metadata ?? {};
-    const previousV19 =
-      typeof previousMetadata.v19 === "object" && previousMetadata.v19 !== null
-        ? (previousMetadata.v19 as Record<string, unknown>)
-        : {};
-
-    const nextMetadata = {
-      ...previousMetadata,
-      v19: {
-        ...previousV19,
-        continuityAnchor: artifact.id === selected.id,
-        anchorSupersededAt:
-          artifact.id === selected.id ? null : new Date().toISOString(),
-      },
-    };
-
-    const { error } = await supabase
-      .from("artifacts")
-      .update({ metadata: nextMetadata })
-      .eq("id", artifact.id);
-
-    if (error) throw error;
-  }
-
-  const selectedMetadata = selected.metadata ?? {};
-  const selectedV19 =
-    typeof selectedMetadata.v19 === "object" && selectedMetadata.v19 !== null
-      ? (selectedMetadata.v19 as Record<string, unknown>)
-      : {};
-
-  const lockedAt = new Date().toISOString();
-  const { error: selectedError } = await supabase
-    .from("artifacts")
-    .update({
-      metadata: {
-        ...selectedMetadata,
-        v19: {
-          ...selectedV19,
-          continuityAnchor: true,
-          lockStatus: "operator-approved",
-          lockedAt,
-          lockReason:
-            String(body.reason || "Operator promoted artifact as the visual continuity anchor.").trim(),
-          anchorPublicUrl: selected.public_url,
-          anchorMimeType: selected.mime_type,
-        },
-      },
-    })
-    .eq("id", selected.id);
-
-  if (selectedError) throw selectedError;
-
-  const { error: lineageError } = await supabase.from("lineage_events").insert({
-    project_id: projectId,
-    scene_id: selected.scene_id,
-    render_job_id: selected.render_job_id,
-    event_type: "continuity-anchor-set",
-    summary: `Artifact promoted to visual continuity anchor: ${selected.artifact_type}`,
-    payload: {
-      artifactId: selected.id,
-      artifactType: selected.artifact_type,
-      mimeType: selected.mime_type,
-      publicUrl: selected.public_url,
-      lockedAt,
-    },
-  });
-
-  if (lineageError) throw lineageError;
-
-  const nextState = await loadRuntimeState(projectId);
-  return NextResponse.json({ ok: true, artifactId: selected.id, state: nextState });
 }
 
 function resolveExecutionMode(outputKind: "image" | "video" | "storyboard") {
