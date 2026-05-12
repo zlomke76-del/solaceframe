@@ -362,8 +362,12 @@ async function executeRenderJob(body: Record<string, unknown>) {
 
   const execution = await executeRenderRequest({ job, outputKind, state });
 
-  if (outputKind === "video" && execution.status !== "completed") {
+  if (execution.status !== "completed") {
     const failedAt = new Date().toISOString();
+    const progressStatus =
+      outputKind === "video"
+        ? "video-provider-failed"
+        : `${outputKind}-provider-failed`;
 
     const { error: failedJobError } = await supabase
       .from("render_jobs")
@@ -373,7 +377,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
         provider: execution.provider,
         provider_job_id: execution.providerJobId,
         completed_at: failedAt,
-        progress_status: "video-provider-failed",
+        progress_status: progressStatus,
         progress_percent: 0,
         provider_payload: {
           provider: execution.provider,
@@ -381,6 +385,8 @@ async function executeRenderJob(body: Record<string, unknown>) {
           outputKind,
           error: execution.error,
           metadata: execution.metadata,
+          noArtifactPersisted: true,
+          reason: "Provider execution failed or returned no media payload; runtime refused to create metadata-only artifact.",
         },
         error: execution.error,
       })
@@ -394,8 +400,8 @@ async function executeRenderJob(body: Record<string, unknown>) {
         project_id: projectId,
         scene_id: job.scene_id,
         render_job_id: job.id,
-        event_type: "video-render-failed",
-        summary: `Video render failed before media artifact creation: ${execution.error ?? "unknown provider failure"}`,
+        event_type: `${outputKind}-render-failed`,
+        summary: `${outputKind} render failed before media artifact creation: ${execution.error ?? "unknown provider failure"}`,
         payload: {
           renderJobId: job.id,
           provider: execution.provider,
@@ -405,6 +411,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
           completedAt: failedAt,
           error: execution.error,
           metadata: execution.metadata,
+          noArtifactPersisted: true,
         },
       });
 
@@ -414,7 +421,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
     return NextResponse.json(
       {
         ok: false,
-        error: execution.error || "Video provider execution failed.",
+        error: execution.error || `${outputKind} provider execution failed.`,
         execution,
         state: nextState,
       },
