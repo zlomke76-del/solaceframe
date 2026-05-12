@@ -50,54 +50,6 @@ function jsonError(error: unknown, status = 500) {
   return NextResponse.json({ ok: false, ...normalized }, { status });
 }
 
-function getMissingSchemaColumn(error: unknown) {
-  if (!error || typeof error !== "object") return null;
-
-  const record = error as Record<string, unknown>;
-  if (record.code !== "PGRST204") return null;
-
-  const message = typeof record.message === "string" ? record.message : "";
-  const match = message.match(/Could not find the '([^']+)' column/);
-  return match?.[1] ?? null;
-}
-
-async function insertArtifactWithSchemaFallback(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
-  payload: Record<string, unknown>
-) {
-  const mutablePayload = { ...payload };
-  const removedColumns: string[] = [];
-
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const { data, error } = await supabase
-      .schema("solaceframe")
-      .from("artifacts")
-      .insert(mutablePayload)
-      .select("*")
-      .single();
-
-    const missingColumn = getMissingSchemaColumn(error);
-
-    if (!missingColumn) {
-      return { data, error, removedColumns };
-    }
-
-    if (!(missingColumn in mutablePayload)) {
-      return { data, error, removedColumns };
-    }
-
-    delete mutablePayload[missingColumn];
-    removedColumns.push(missingColumn);
-  }
-
-  return {
-    data: null,
-    error: new Error("Artifact insert failed after repeated schema-cache fallback attempts."),
-    removedColumns
-  };
-}
-
-
 export async function GET() {
   try {
     const projectId = await ensureSeedRuntime();
@@ -343,7 +295,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
   const state = await loadRuntimeState(projectId);
-  const job = state.renderJobs.find((item: { id: string }) => item.id === renderJobId);
+  const job = state.renderJobs.find((item) => item.id === renderJobId);
 
   if (!job) {
     return NextResponse.json({ ok: false, error: "Render job not found" }, { status: 404 });
@@ -360,7 +312,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
     .update({
       status: "running",
       output_kind: outputKind,
-      execution_mode: process.env.SOLACEFRAME_RENDER_WEBHOOK_URL ? "external-webhook" : "local-placeholder",
+      execution_mode: resolveExecutionMode(outputKind),
       started_at: startedAt,
       error: null
     })
@@ -369,32 +321,42 @@ async function executeRenderJob(body: Record<string, unknown>) {
   if (runningError) throw runningError;
 
   const execution = await executeRenderRequest({ job, outputKind, state });
+  const persistedMedia = await persistExecutionMedia({
+    projectId,
+    renderJobId: job.id,
+    artifactType: execution.artifactType,
+    artifactUrl: execution.artifactUrl,
+    mimeType: execution.mimeType
+  });
   const completedAt = new Date().toISOString();
 
-  const artifactPayload = {
-    project_id: projectId,
-    scene_id: job.scene_id,
-    render_job_id: job.id,
-    branch_id: job.branch_id,
-    artifact_type: execution.artifactType,
-    storage_path: null,
-    public_url: execution.artifactUrl,
-    mime_type: execution.mimeType,
-    metadata: execution.metadata
-  };
-
-  const {
-    data: artifact,
-    error: artifactError,
-    removedColumns: artifactFallbackColumns
-  } = await insertArtifactWithSchemaFallback(getSupabaseAdmin(), artifactPayload);
-
-  if (artifactFallbackColumns.length > 0) {
-    console.warn("SolaceFrame artifact insert used schema-cache fallback:", artifactFallbackColumns);
-  }
+  const { data: artifact, error: artifactError } = await supabase
+    .from("artifacts")
+    .insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      branch_id: job.branch_id,
+      artifact_type: execution.artifactType,
+      storage_path: persistedMedia.storagePath,
+      public_url: persistedMedia.publicUrl,
+      mime_type: persistedMedia.mimeType,
+      metadata: {
+        ...execution.metadata,
+        v17: {
+          storageBacked: Boolean(persistedMedia.storagePath),
+          originalDelivery: persistedMedia.originalDelivery,
+          bucket: persistedMedia.bucket,
+          storagePath: persistedMedia.storagePath,
+          byteLength: persistedMedia.byteLength,
+          persistedAt: persistedMedia.persistedAt
+        }
+      }
+    })
+    .select("*")
+    .single();
 
   if (artifactError) throw artifactError;
-  if (!artifact) throw new Error("Artifact execution completed but no artifact row was returned.");
 
   const { error: jobError } = await supabase
     .from("render_jobs")
@@ -403,7 +365,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
       model_route: execution.provider,
       provider: execution.provider,
       provider_job_id: execution.providerJobId,
-      output_url: execution.artifactUrl,
+      output_url: persistedMedia.publicUrl,
       artifact_id: artifact.id,
       completed_at: completedAt,
       error: execution.error
@@ -435,7 +397,126 @@ async function executeRenderJob(body: Record<string, unknown>) {
   if (lineageError) throw lineageError;
 
   const nextState = await loadRuntimeState(projectId);
-  return NextResponse.json({ ok: true, execution, artifact, state: nextState });
+  return NextResponse.json({ ok: true, execution: { ...execution, artifactUrl: persistedMedia.publicUrl, mimeType: persistedMedia.mimeType }, artifact, state: nextState });
+}
+
+
+function resolveExecutionMode(outputKind: "image" | "video" | "storyboard") {
+  if (process.env.SOLACEFRAME_RENDER_WEBHOOK_URL) return "external-webhook";
+  if (process.env.SOLACEFRAME_FORCE_PLACEHOLDER_RENDER === "true") return "local-placeholder";
+  if (outputKind === "video") return "local-placeholder";
+  if (process.env.VERCEL_AI_GATEWAY_API_KEY || process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN) {
+    return "vercel-ai-gateway";
+  }
+  return "local-placeholder";
+}
+
+type PersistExecutionMediaInput = {
+  projectId: string;
+  renderJobId: string;
+  artifactType: string;
+  artifactUrl: string | null;
+  mimeType: string | null;
+};
+
+type PersistedExecutionMedia = {
+  publicUrl: string | null;
+  storagePath: string | null;
+  mimeType: string | null;
+  bucket: string | null;
+  originalDelivery: "none" | "data-url" | "external-url";
+  byteLength: number | null;
+  persistedAt: string;
+};
+
+async function persistExecutionMedia(input: PersistExecutionMediaInput): Promise<PersistedExecutionMedia> {
+  const persistedAt = new Date().toISOString();
+
+  if (!input.artifactUrl) {
+    return {
+      publicUrl: null,
+      storagePath: null,
+      mimeType: input.mimeType,
+      bucket: null,
+      originalDelivery: "none",
+      byteLength: null,
+      persistedAt
+    };
+  }
+
+  const parsedDataUrl = parseDataUrl(input.artifactUrl, input.mimeType);
+
+  if (!parsedDataUrl) {
+    return {
+      publicUrl: input.artifactUrl,
+      storagePath: null,
+      mimeType: input.mimeType,
+      bucket: null,
+      originalDelivery: "external-url",
+      byteLength: null,
+      persistedAt
+    };
+  }
+
+  const bucket = process.env.SOLACEFRAME_ARTIFACT_BUCKET || "solaceframe-artifacts";
+  const extension = extensionForMimeType(parsedDataUrl.mimeType, input.artifactType);
+  const safeArtifactType = input.artifactType.replace(/[^a-z0-9_-]/gi, "-").toLowerCase() || "artifact";
+  const storagePath = [
+    input.projectId,
+    input.renderJobId,
+    `${Date.now()}-${safeArtifactType}.${extension}`
+  ].join("/");
+
+  const rootSupabase = getSupabaseAdmin();
+  const { error: uploadError } = await rootSupabase.storage
+    .from(bucket)
+    .upload(storagePath, parsedDataUrl.buffer, {
+      contentType: parsedDataUrl.mimeType,
+      cacheControl: "31536000",
+      upsert: false
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { data } = rootSupabase.storage.from(bucket).getPublicUrl(storagePath);
+
+  return {
+    publicUrl: data.publicUrl,
+    storagePath,
+    mimeType: parsedDataUrl.mimeType,
+    bucket,
+    originalDelivery: "data-url",
+    byteLength: parsedDataUrl.buffer.byteLength,
+    persistedAt
+  };
+}
+
+function parseDataUrl(value: string, fallbackMimeType: string | null): { mimeType: string; buffer: Buffer } | null {
+  if (!value.startsWith("data:")) return null;
+
+  const commaIndex = value.indexOf(",");
+  if (commaIndex < 0) return null;
+
+  const metadata = value.slice(5, commaIndex);
+  const payload = value.slice(commaIndex + 1);
+  const metadataParts = metadata.split(";").filter(Boolean);
+  const mimeType = metadataParts.find((part) => part.includes("/")) || fallbackMimeType || "application/octet-stream";
+  const isBase64 = metadataParts.includes("base64");
+
+  return {
+    mimeType,
+    buffer: isBase64 ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8")
+  };
+}
+
+function extensionForMimeType(mimeType: string, artifactType: string) {
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/webp") return "webp";
+  if (mimeType === "image/svg+xml") return "svg";
+  if (mimeType === "video/mp4") return "mp4";
+  if (mimeType === "application/json" || artifactType === "storyboard") return "json";
+  return "bin";
 }
 
 async function forkBranch(body: Record<string, unknown>) {
