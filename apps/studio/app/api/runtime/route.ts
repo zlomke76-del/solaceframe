@@ -6,24 +6,31 @@ import {
   computeBranchDelta,
   evaluateRuntimeAdmissibility,
   mutateCharacters,
-  mutateWorld
+  mutateWorld,
 } from "@/lib/runtime/engine";
 import { executeRenderRequest } from "@/lib/runtime/execution";
 import type {
   RuntimeCausalEvent,
   RuntimeCharacter,
   RuntimeContradiction,
-  RuntimeWorld
+  RuntimeWorld,
 } from "@/lib/runtime/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-type RuntimeAction = "compile_scene" | "fork_branch" | "resolve_contradiction" | "execute_render_job";
+type RuntimeAction =
+  | "compile_scene"
+  | "fork_branch"
+  | "resolve_contradiction"
+  | "execute_render_job";
 
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
-    return { message: error.message, raw: { name: error.name, stack: error.stack } };
+    return {
+      message: error.message,
+      raw: { name: error.name, stack: error.stack },
+    };
   }
 
   if (typeof error === "object" && error !== null) {
@@ -33,12 +40,12 @@ function normalizeRuntimeError(error: unknown) {
         typeof record.message === "string"
           ? record.message
           : typeof record.error === "string"
-          ? record.error
-          : "Non-Error runtime failure",
+            ? record.error
+            : "Non-Error runtime failure",
       code: typeof record.code === "string" ? record.code : undefined,
       details: typeof record.details === "string" ? record.details : undefined,
       hint: typeof record.hint === "string" ? record.hint : undefined,
-      raw: record
+      raw: record,
     };
   }
 
@@ -88,20 +95,25 @@ async function compileScene(body: Record<string, unknown>) {
   const sceneText = String(body.sceneText || "").trim();
 
   if (!sceneText) {
-    return NextResponse.json({ ok: false, error: "sceneText is required" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "sceneText is required" },
+      { status: 400 },
+    );
   }
 
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
   const state = await loadRuntimeState(projectId);
 
-  const unresolvedContradictions = state.contradictions.filter((item) => !item.resolved);
+  const unresolvedContradictions = state.contradictions.filter(
+    (item) => !item.resolved,
+  );
   const analysis = analyzeScene(
     sceneText,
     state.world,
     state.characters,
     state.causalEvents,
-    unresolvedContradictions
+    unresolvedContradictions,
   );
 
   const beforeState = {
@@ -110,11 +122,15 @@ async function compileScene(body: Record<string, unknown>) {
     causalEvents: state.causalEvents.slice(0, 20),
     unresolvedContradictions,
     activeBranch: state.activeBranch,
-    admissibilityReport: state.admissibilityReport
+    admissibilityReport: state.admissibilityReport,
   };
 
   const nextWorld = mutateWorld(state.world, analysis);
-  const nextCharacters = mutateCharacters(state.characters, sceneText, analysis);
+  const nextCharacters = mutateCharacters(
+    state.characters,
+    sceneText,
+    analysis,
+  );
   const branchDelta = computeBranchDelta(analysis);
 
   const { data: scene, error: sceneError } = await supabase
@@ -126,7 +142,7 @@ async function compileScene(body: Record<string, unknown>) {
       scene_text: sceneText,
       admissibility: analysis.admissibility,
       drift_risk: analysis.driftRisk,
-      compiled_packet: analysis.packet
+      compiled_packet: analysis.packet,
     })
     .select("*")
     .single();
@@ -134,25 +150,23 @@ async function compileScene(body: Record<string, unknown>) {
   if (sceneError) throw sceneError;
 
   if (analysis.causalEvents.length > 0) {
-    const { error: causalError } = await supabase
-      .from("causal_events")
-      .insert(
-        analysis.causalEvents.map((event) => ({
-          project_id: projectId,
-          branch_id: state.activeBranch.id,
-          scene_id: scene.id,
-          parent_event_id: event.parent_event_id ?? null,
-          event_key: event.event_key,
-          event_type: event.event_type,
-          subject: event.subject,
-          predicate: event.predicate,
-          object_ref: event.object_ref,
-          severity: event.severity,
-          reversibility: event.reversibility,
-          repaired: false,
-          payload: event.payload
-        }))
-      );
+    const { error: causalError } = await supabase.from("causal_events").insert(
+      analysis.causalEvents.map((event) => ({
+        project_id: projectId,
+        branch_id: state.activeBranch.id,
+        scene_id: scene.id,
+        parent_event_id: event.parent_event_id ?? null,
+        event_key: event.event_key,
+        event_type: event.event_type,
+        subject: event.subject,
+        predicate: event.predicate,
+        object_ref: event.object_ref,
+        severity: event.severity,
+        reversibility: event.reversibility,
+        repaired: false,
+        payload: event.payload,
+      })),
+    );
 
     if (causalError) throw causalError;
   }
@@ -169,8 +183,8 @@ async function compileScene(body: Record<string, unknown>) {
           summary: contradiction.summary,
           severity: contradiction.severity,
           resolved: false,
-          payload: contradiction.payload
-        }))
+          payload: contradiction.payload,
+        })),
       );
 
     if (contradictionError) throw contradictionError;
@@ -180,7 +194,7 @@ async function compileScene(body: Record<string, unknown>) {
     .from("worlds")
     .update({
       state: nextWorld.state,
-      pressure: nextWorld.pressure
+      pressure: nextWorld.pressure,
     })
     .eq("id", state.world.id);
 
@@ -192,7 +206,7 @@ async function compileScene(body: Record<string, unknown>) {
       .update({
         state: character.state,
         continuity_score: character.continuity_score,
-        pressure: character.pressure
+        pressure: character.pressure,
       })
       .eq("id", character.id);
 
@@ -201,14 +215,17 @@ async function compileScene(body: Record<string, unknown>) {
 
   const nextDivergence = Math.min(
     100,
-    state.activeBranch.divergence_score + branchDelta.divergenceDelta
+    state.activeBranch.divergence_score + branchDelta.divergenceDelta,
   );
 
   const { error: branchError } = await supabase
     .from("branches")
     .update({
       divergence_score: nextDivergence,
-      status: analysis.admissibility === "blocked" ? "blocked-review" : state.activeBranch.status
+      status:
+        analysis.admissibility === "blocked"
+          ? "blocked-review"
+          : state.activeBranch.status,
     })
     .eq("id", state.activeBranch.id);
 
@@ -225,7 +242,7 @@ async function compileScene(body: Record<string, unknown>) {
       prompt: buildCanonicalPrompt(sceneText, analysis.packet),
       packet: analysis.packet,
       output_kind: "image",
-      execution_mode: "manual"
+      execution_mode: "manual",
     })
     .select("*")
     .single();
@@ -239,41 +256,37 @@ async function compileScene(body: Record<string, unknown>) {
     contradictions: analysis.contradictions,
     branch: {
       ...state.activeBranch,
-      divergence_score: nextDivergence
-    }
+      divergence_score: nextDivergence,
+    },
   };
 
-  const { error: diffError } = await supabase
-    .from("continuity_diffs")
-    .insert({
-      project_id: projectId,
-      scene_id: scene.id,
-      before_state: beforeState,
-      after_state: afterState,
-      preserved: analysis.preserve,
-      mutated: analysis.mutated,
-      violations: analysis.violations
-    });
+  const { error: diffError } = await supabase.from("continuity_diffs").insert({
+    project_id: projectId,
+    scene_id: scene.id,
+    before_state: beforeState,
+    after_state: afterState,
+    preserved: analysis.preserve,
+    mutated: analysis.mutated,
+    violations: analysis.violations,
+  });
 
   if (diffError) throw diffError;
 
-  const { error: lineageError } = await supabase
-    .from("lineage_events")
-    .insert({
-      project_id: projectId,
-      scene_id: scene.id,
-      render_job_id: renderJob.id,
-      event_type: "causal-scene-compiled",
-      summary: `Causal scene compiled: ${analysis.title}`,
-      payload: {
-        admissibility: analysis.admissibility,
-        driftRisk: analysis.driftRisk,
-        renderJobId: renderJob.id,
-        causalEvents: analysis.causalEvents,
-        contradictions: analysis.contradictions,
-        renderConstraints: analysis.renderConstraints
-      }
-    });
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: scene.id,
+    render_job_id: renderJob.id,
+    event_type: "causal-scene-compiled",
+    summary: `Causal scene compiled: ${analysis.title}`,
+    payload: {
+      admissibility: analysis.admissibility,
+      driftRisk: analysis.driftRisk,
+      renderJobId: renderJob.id,
+      causalEvents: analysis.causalEvents,
+      contradictions: analysis.contradictions,
+      renderConstraints: analysis.renderConstraints,
+    },
+  });
 
   if (lineageError) throw lineageError;
 
@@ -283,14 +296,23 @@ async function compileScene(body: Record<string, unknown>) {
 
 async function executeRenderJob(body: Record<string, unknown>) {
   const renderJobId = String(body.renderJobId || "").trim();
-  const outputKind = String(body.outputKind || "image") as "image" | "video" | "storyboard";
+  const outputKind = String(body.outputKind || "image") as
+    | "image"
+    | "video"
+    | "storyboard";
 
   if (!renderJobId) {
-    return NextResponse.json({ ok: false, error: "renderJobId is required" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "renderJobId is required" },
+      { status: 400 },
+    );
   }
 
   if (!["image", "video", "storyboard"].includes(outputKind)) {
-    return NextResponse.json({ ok: false, error: "outputKind must be image, video, or storyboard" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "outputKind must be image, video, or storyboard" },
+      { status: 400 },
+    );
   }
 
   const projectId = await ensureSeedRuntime();
@@ -299,11 +321,20 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const job = state.renderJobs.find((item) => item.id === renderJobId);
 
   if (!job) {
-    return NextResponse.json({ ok: false, error: "Render job not found" }, { status: 404 });
+    return NextResponse.json(
+      { ok: false, error: "Render job not found" },
+      { status: 404 },
+    );
   }
 
   if (job.status === "blocked") {
-    return NextResponse.json({ ok: false, error: "Render job is blocked by prior admissibility state" }, { status: 409 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Render job is blocked by prior admissibility state",
+      },
+      { status: 409 },
+    );
   }
 
   const startedAt = new Date().toISOString();
@@ -315,7 +346,10 @@ async function executeRenderJob(body: Record<string, unknown>) {
       output_kind: outputKind,
       execution_mode: resolveExecutionMode(outputKind),
       started_at: startedAt,
-      error: null
+      progress_status:
+        outputKind === "video" ? "submitting-video-generation" : "generating",
+      progress_percent: outputKind === "video" ? 15 : 10,
+      error: null,
     })
     .eq("id", job.id);
 
@@ -327,7 +361,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
     renderJobId: job.id,
     artifactType: execution.artifactType,
     artifactUrl: execution.artifactUrl,
-    mimeType: execution.mimeType
+    mimeType: execution.mimeType,
   });
   const completedAt = new Date().toISOString();
 
@@ -351,9 +385,20 @@ async function executeRenderJob(body: Record<string, unknown>) {
           storagePath: persistedMedia.storagePath,
           byteLength: persistedMedia.byteLength,
           persistedAt: persistedMedia.persistedAt,
-          videoProviderEnabled: outputKind === "video" && execution.provider === "vercel-ai-gateway-video"
-        }
-      }
+          videoProviderEnabled:
+            outputKind === "video" &&
+            execution.provider === "vercel-ai-gateway-video",
+        },
+        v181: {
+          completionRuntime:
+            outputKind === "video"
+              ? "video-result-extraction"
+              : "standard-media-completion",
+          hasPublicMediaUrl: Boolean(persistedMedia.publicUrl),
+          finalMimeType: persistedMedia.mimeType,
+          finalStatus: execution.status,
+        },
+      },
     })
     .select("*")
     .single();
@@ -370,44 +415,74 @@ async function executeRenderJob(body: Record<string, unknown>) {
       output_url: persistedMedia.publicUrl,
       artifact_id: artifact.id,
       completed_at: completedAt,
-      error: execution.error
+      progress_status:
+        execution.status === "completed"
+          ? "completed"
+          : "metadata-only-or-failed",
+      progress_percent: execution.status === "completed" ? 100 : 0,
+      provider_payload: {
+        provider: execution.provider,
+        providerJobId: execution.providerJobId,
+        outputKind,
+        artifactUrlPersisted: Boolean(persistedMedia.publicUrl),
+        mimeType: persistedMedia.mimeType,
+        error: execution.error,
+        metadata: execution.metadata,
+      },
+      error: execution.error,
     })
     .eq("id", job.id);
 
   if (jobError) throw jobError;
 
-  const { error: lineageError } = await supabase
-    .from("lineage_events")
-    .insert({
-      project_id: projectId,
-      scene_id: job.scene_id,
-      render_job_id: job.id,
-      event_type: execution.status === "completed" ? "render-executed" : `render-${execution.status}`,
-      summary: `Render job ${execution.status}: ${outputKind}`,
-      payload: {
-        renderJobId: job.id,
-        artifactId: artifact.id,
-        provider: execution.provider,
-        providerJobId: execution.providerJobId,
-        outputKind,
-        startedAt,
-        completedAt,
-        error: execution.error
-      }
-    });
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: job.scene_id,
+    render_job_id: job.id,
+    event_type:
+      execution.status === "completed"
+        ? "render-executed"
+        : `render-${execution.status}`,
+    summary: `Render job ${execution.status}: ${outputKind}`,
+    payload: {
+      renderJobId: job.id,
+      artifactId: artifact.id,
+      provider: execution.provider,
+      providerJobId: execution.providerJobId,
+      outputKind,
+      startedAt,
+      completedAt,
+      error: execution.error,
+    },
+  });
 
   if (lineageError) throw lineageError;
 
   const nextState = await loadRuntimeState(projectId);
-  return NextResponse.json({ ok: true, execution: { ...execution, artifactUrl: persistedMedia.publicUrl, mimeType: persistedMedia.mimeType }, artifact, state: nextState });
+  return NextResponse.json({
+    ok: true,
+    execution: {
+      ...execution,
+      artifactUrl: persistedMedia.publicUrl,
+      mimeType: persistedMedia.mimeType,
+    },
+    artifact,
+    state: nextState,
+  });
 }
-
 
 function resolveExecutionMode(outputKind: "image" | "video" | "storyboard") {
   if (process.env.SOLACEFRAME_RENDER_WEBHOOK_URL) return "external-webhook";
-  if (process.env.SOLACEFRAME_FORCE_PLACEHOLDER_RENDER === "true") return "local-placeholder";
-  if (process.env.VERCEL_AI_GATEWAY_API_KEY || process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN) {
-    return outputKind === "video" ? "vercel-ai-gateway-video" : "vercel-ai-gateway";
+  if (process.env.SOLACEFRAME_FORCE_PLACEHOLDER_RENDER === "true")
+    return "local-placeholder";
+  if (
+    process.env.VERCEL_AI_GATEWAY_API_KEY ||
+    process.env.AI_GATEWAY_API_KEY ||
+    process.env.VERCEL_OIDC_TOKEN
+  ) {
+    return outputKind === "video"
+      ? "vercel-ai-gateway-video"
+      : "vercel-ai-gateway";
   }
   return "local-placeholder";
 }
@@ -430,7 +505,9 @@ type PersistedExecutionMedia = {
   persistedAt: string;
 };
 
-async function persistExecutionMedia(input: PersistExecutionMediaInput): Promise<PersistedExecutionMedia> {
+async function persistExecutionMedia(
+  input: PersistExecutionMediaInput,
+): Promise<PersistedExecutionMedia> {
   const persistedAt = new Date().toISOString();
 
   if (!input.artifactUrl) {
@@ -441,7 +518,7 @@ async function persistExecutionMedia(input: PersistExecutionMediaInput): Promise
       bucket: null,
       originalDelivery: "none",
       byteLength: null,
-      persistedAt
+      persistedAt,
     };
   }
 
@@ -455,17 +532,23 @@ async function persistExecutionMedia(input: PersistExecutionMediaInput): Promise
       bucket: null,
       originalDelivery: "external-url",
       byteLength: null,
-      persistedAt
+      persistedAt,
     };
   }
 
-  const bucket = process.env.SOLACEFRAME_ARTIFACT_BUCKET || "solaceframe-artifacts";
-  const extension = extensionForMimeType(parsedDataUrl.mimeType, input.artifactType);
-  const safeArtifactType = input.artifactType.replace(/[^a-z0-9_-]/gi, "-").toLowerCase() || "artifact";
+  const bucket =
+    process.env.SOLACEFRAME_ARTIFACT_BUCKET || "solaceframe-artifacts";
+  const extension = extensionForMimeType(
+    parsedDataUrl.mimeType,
+    input.artifactType,
+  );
+  const safeArtifactType =
+    input.artifactType.replace(/[^a-z0-9_-]/gi, "-").toLowerCase() ||
+    "artifact";
   const storagePath = [
     input.projectId,
     input.renderJobId,
-    `${Date.now()}-${safeArtifactType}.${extension}`
+    `${Date.now()}-${safeArtifactType}.${extension}`,
   ].join("/");
 
   const rootSupabase = getSupabaseAdmin();
@@ -474,7 +557,7 @@ async function persistExecutionMedia(input: PersistExecutionMediaInput): Promise
     .upload(storagePath, parsedDataUrl.buffer, {
       contentType: parsedDataUrl.mimeType,
       cacheControl: "31536000",
-      upsert: false
+      upsert: false,
     });
 
   if (uploadError) throw uploadError;
@@ -488,11 +571,14 @@ async function persistExecutionMedia(input: PersistExecutionMediaInput): Promise
     bucket,
     originalDelivery: "data-url",
     byteLength: parsedDataUrl.buffer.byteLength,
-    persistedAt
+    persistedAt,
   };
 }
 
-function parseDataUrl(value: string, fallbackMimeType: string | null): { mimeType: string; buffer: Buffer } | null {
+function parseDataUrl(
+  value: string,
+  fallbackMimeType: string | null,
+): { mimeType: string; buffer: Buffer } | null {
   if (!value.startsWith("data:")) return null;
 
   const commaIndex = value.indexOf(",");
@@ -501,12 +587,17 @@ function parseDataUrl(value: string, fallbackMimeType: string | null): { mimeTyp
   const metadata = value.slice(5, commaIndex);
   const payload = value.slice(commaIndex + 1);
   const metadataParts = metadata.split(";").filter(Boolean);
-  const mimeType = metadataParts.find((part) => part.includes("/")) || fallbackMimeType || "application/octet-stream";
+  const mimeType =
+    metadataParts.find((part) => part.includes("/")) ||
+    fallbackMimeType ||
+    "application/octet-stream";
   const isBase64 = metadataParts.includes("base64");
 
   return {
     mimeType,
-    buffer: isBase64 ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8")
+    buffer: isBase64
+      ? Buffer.from(payload, "base64")
+      : Buffer.from(decodeURIComponent(payload), "utf8"),
   };
 }
 
@@ -516,7 +607,8 @@ function extensionForMimeType(mimeType: string, artifactType: string) {
   if (mimeType === "image/webp") return "webp";
   if (mimeType === "image/svg+xml") return "svg";
   if (mimeType === "video/mp4") return "mp4";
-  if (mimeType === "application/json" || artifactType === "storyboard") return "json";
+  if (mimeType === "application/json" || artifactType === "storyboard")
+    return "json";
   return "bin";
 }
 
@@ -524,17 +616,23 @@ async function forkBranch(body: Record<string, unknown>) {
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
   const state = await loadRuntimeState(projectId);
-  const forkName = String(body.name || `Fork from ${state.activeBranch.name}`).trim();
-  const forkReason = String(body.reason || "Operator-created governed branch fork").trim();
+  const forkName = String(
+    body.name || `Fork from ${state.activeBranch.name}`,
+  ).trim();
+  const forkReason = String(
+    body.reason || "Operator-created governed branch fork",
+  ).trim();
 
   const snapshot = {
     forkedAt: new Date().toISOString(),
     parentBranch: state.activeBranch,
     world: state.world,
     characters: state.characters,
-    unresolvedContradictions: state.contradictions.filter((item) => !item.resolved),
+    unresolvedContradictions: state.contradictions.filter(
+      (item) => !item.resolved,
+    ),
     causalEvents: state.causalEvents.slice(0, 40),
-    admissibilityReport: state.admissibilityReport
+    admissibilityReport: state.admissibilityReport,
   };
 
   const { data: branch, error: branchError } = await supabase
@@ -546,7 +644,7 @@ async function forkBranch(body: Record<string, unknown>) {
       divergence_score: Math.min(100, state.activeBranch.divergence_score + 4),
       status: "active-fork",
       snapshot,
-      fork_reason: forkReason
+      fork_reason: forkReason,
     })
     .select("*")
     .single();
@@ -560,19 +658,17 @@ async function forkBranch(body: Record<string, unknown>) {
 
   if (projectError) throw projectError;
 
-  const { error: lineageError } = await supabase
-    .from("lineage_events")
-    .insert({
-      project_id: projectId,
-      event_type: "branch-forked",
-      summary: `Branch forked from ${state.activeBranch.name}: ${forkName}`,
-      payload: {
-        parentBranchId: state.activeBranch.id,
-        childBranchId: branch.id,
-        forkReason,
-        snapshot
-      }
-    });
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    event_type: "branch-forked",
+    summary: `Branch forked from ${state.activeBranch.name}: ${forkName}`,
+    payload: {
+      parentBranchId: state.activeBranch.id,
+      childBranchId: branch.id,
+      forkReason,
+      snapshot,
+    },
+  });
 
   if (lineageError) throw lineageError;
 
@@ -582,20 +678,30 @@ async function forkBranch(body: Record<string, unknown>) {
 
 async function resolveContradiction(body: Record<string, unknown>) {
   const contradictionId = String(body.contradictionId || "").trim();
-  const repairNote = String(body.repairNote || "Contradiction resolved through governed repair review.").trim();
+  const repairNote = String(
+    body.repairNote || "Contradiction resolved through governed repair review.",
+  ).trim();
 
   if (!contradictionId) {
-    return NextResponse.json({ ok: false, error: "contradictionId is required" }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "contradictionId is required" },
+      { status: 400 },
+    );
   }
 
   const projectId = await ensureSeedRuntime();
   const supabase = getSupabaseAdmin().schema("solaceframe");
   const state = await loadRuntimeState(projectId);
 
-  const contradiction = state.contradictions.find((item) => item.id === contradictionId);
+  const contradiction = state.contradictions.find(
+    (item) => item.id === contradictionId,
+  );
 
   if (!contradiction) {
-    return NextResponse.json({ ok: false, error: "Contradiction not found in active runtime" }, { status: 404 });
+    return NextResponse.json(
+      { ok: false, error: "Contradiction not found in active runtime" },
+      { status: 404 },
+    );
   }
 
   const { data: repairEvent, error: repairError } = await supabase
@@ -615,8 +721,8 @@ async function resolveContradiction(body: Record<string, unknown>) {
       payload: {
         contradictionId: contradiction.id,
         summary: contradiction.summary,
-        repairNote
-      }
+        repairNote,
+      },
     })
     .select("*")
     .single();
@@ -633,15 +739,17 @@ async function resolveContradiction(body: Record<string, unknown>) {
       payload: {
         ...contradiction.payload,
         repairNote,
-        repairCausalEventId: repairEvent.id
-      }
+        repairCausalEventId: repairEvent.id,
+      },
     })
     .eq("id", contradiction.id);
 
   if (contradictionError) throw contradictionError;
 
   const nextPressure = Math.max(0, state.world.pressure - 6);
-  const currentRepairs = Array.isArray(state.world.state.repairs) ? state.world.state.repairs : [];
+  const currentRepairs = Array.isArray(state.world.state.repairs)
+    ? state.world.state.repairs
+    : [];
 
   const { error: worldError } = await supabase
     .from("worlds")
@@ -656,28 +764,26 @@ async function resolveContradiction(body: Record<string, unknown>) {
             at: new Date().toISOString(),
             contradictionId: contradiction.id,
             repairEventId: repairEvent.id,
-            repairNote
-          }
-        ]
-      }
+            repairNote,
+          },
+        ],
+      },
     })
     .eq("id", state.world.id);
 
   if (worldError) throw worldError;
 
-  const { error: lineageError } = await supabase
-    .from("lineage_events")
-    .insert({
-      project_id: projectId,
-      scene_id: contradiction.scene_id,
-      event_type: "contradiction-resolved",
-      summary: `Contradiction resolved: ${contradiction.summary}`,
-      payload: {
-        contradictionId: contradiction.id,
-        repairEventId: repairEvent.id,
-        repairNote
-      }
-    });
+  const { error: lineageError } = await supabase.from("lineage_events").insert({
+    project_id: projectId,
+    scene_id: contradiction.scene_id,
+    event_type: "contradiction-resolved",
+    summary: `Contradiction resolved: ${contradiction.summary}`,
+    payload: {
+      contradictionId: contradiction.id,
+      repairEventId: repairEvent.id,
+      repairNote,
+    },
+  });
 
   if (lineageError) throw lineageError;
 
@@ -750,17 +856,60 @@ async function loadRuntimeState(projectId: string) {
     lineageEventsResult,
     continuityDiffsResult,
     causalEventsResult,
-    contradictionsResult
+    contradictionsResult,
   ] = await Promise.all([
-    supabase.from("branches").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
-    supabase.from("characters").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
-    supabase.from("scenes").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-    supabase.from("render_jobs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-    supabase.from("artifacts").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-    supabase.from("lineage_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-    supabase.from("continuity_diffs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
-    supabase.from("causal_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(40),
-    supabase.from("contradictions").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(40)
+    supabase
+      .from("branches")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("characters")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("scenes")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("render_jobs")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("artifacts")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("lineage_events")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("continuity_diffs")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("causal_events")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(40),
+    supabase
+      .from("contradictions")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(40),
   ]);
 
   if (branchesResult.error) throw branchesResult.error;
@@ -774,12 +923,13 @@ async function loadRuntimeState(projectId: string) {
   if (contradictionsResult.error) throw contradictionsResult.error;
 
   const causalEvents = (causalEventsResult.data ?? []) as RuntimeCausalEvent[];
-  const contradictions = (contradictionsResult.data ?? []) as RuntimeContradiction[];
+  const contradictions = (contradictionsResult.data ??
+    []) as RuntimeContradiction[];
   const admissibilityReport = evaluateRuntimeAdmissibility({
     world: world as RuntimeWorld,
     activeBranch,
     causalEvents,
-    contradictions
+    contradictions,
   });
 
   return {
@@ -795,15 +945,18 @@ async function loadRuntimeState(projectId: string) {
     continuityDiffs: continuityDiffsResult.data ?? [],
     causalEvents,
     contradictions,
-    admissibilityReport
+    admissibilityReport,
   };
 }
 
-function buildCanonicalPrompt(sceneText: string, packet: Record<string, unknown>) {
+function buildCanonicalPrompt(
+  sceneText: string,
+  packet: Record<string, unknown>,
+) {
   return [
     "Governed synthetic media render.",
     `Scene: ${sceneText}`,
     "The render must obey causal constraints, continuity diffs, persistent object lineage, branch state, repair lineage, and unresolved contradictions.",
-    `Packet: ${JSON.stringify(packet)}`
+    `Packet: ${JSON.stringify(packet)}`,
   ].join("\n");
 }
