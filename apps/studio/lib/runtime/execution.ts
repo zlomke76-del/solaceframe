@@ -1,4 +1,4 @@
-import { experimental_generateVideo as generateVideo } from "ai";
+import { generateImage, experimental_generateVideo as generateVideo } from "ai";
 import type {
   Admissibility,
   RenderOutputKind,
@@ -335,102 +335,85 @@ async function executeVercelGatewayRender(
   packet: Record<string, unknown>,
   outputKind: RenderOutputKind,
 ): Promise<RenderExecutionResult> {
-  const apiKey = getGatewayApiKey();
-
-  if (!apiKey) {
-    return {
-      status: "failed",
-      provider: "vercel-ai-gateway",
-      providerJobId: null,
-      artifactType: outputKind,
-      artifactUrl: null,
-      mimeType: null,
-      metadata: { packet, reason: "No Vercel AI Gateway credential present." },
-      error:
-        "Missing VERCEL_AI_GATEWAY_API_KEY, AI_GATEWAY_API_KEY, or VERCEL_OIDC_TOKEN.",
-    };
-  }
-
   const model =
     process.env.SOLACEFRAME_IMAGE_MODEL || "google/gemini-3-pro-image";
-  const prompt = buildGatewayImagePrompt(packet, outputKind);
+  const promptText = buildGatewayImagePrompt(packet, outputKind);
+  const visualAnchor = getPrimaryVisualAnchor(packet);
+  const size = getImageSize();
+  const startedAt = new Date().toISOString();
+  const prompt = visualAnchor
+    ? { text: promptText, images: [visualAnchor.publicUrl] }
+    : promptText;
 
   try {
-    const response = await fetch(`${AI_GATEWAY_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        modalities: ["text", "image"],
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a governed synthetic continuity renderer. Render the requested media from the runtime packet only. Preserve identity, branch state, visible damage, carried objects, environmental continuity, and unresolved contradictions. Do not invent unsupported world facts.",
-          },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+    const rawResult = (await generateImage({
+      model,
+      prompt,
+      n: 1,
+      size,
+      providerOptions: buildImageProviderOptions(model) as any,
+    } as any)) as unknown;
 
-    const data = (await response
-      .json()
-      .catch(() => ({}))) as GatewayCompletionResponse;
+    const result = coerceRecord(
+      rawResult,
+      "Vercel AI Gateway image generation returned a non-object result.",
+    );
+    const extraction = extractGeneratedImage(result);
 
-    if (!response.ok) {
+    if (!extraction.image) {
       return {
         status: "failed",
-        provider: "vercel-ai-gateway",
-        providerJobId: data.id ?? null,
+        provider: "vercel-ai-gateway-image",
+        providerJobId: extractProviderJobId(result),
         artifactType: outputKind,
         artifactUrl: null,
-        mimeType: null,
-        metadata: { packet, model, status: response.status, response: data },
-        error:
-          data.error?.message ||
-          `Vercel AI Gateway render failed with HTTP ${response.status}`,
-      };
-    }
-
-    const imageUrl = extractGatewayImageUrl(data);
-
-    if (!imageUrl) {
-      return {
-        status: "failed",
-        provider: "vercel-ai-gateway",
-        providerJobId: data.id ?? null,
-        artifactType: outputKind,
-        artifactUrl: null,
-        mimeType: null,
+        mimeType: "application/json",
         metadata: {
           packet,
           model,
-          response: data,
-          assistantContent: data.choices?.[0]?.message?.content ?? null,
+          size,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          responseShape: summarizeImageResultShape(result),
+          response: safeProviderResponse(result),
+          v191: {
+            providerClass: "ai-gateway-image",
+            executionMode: "ai-sdk-generate-image",
+            reason:
+              "No supported image payload was found on result.image, result.images[0], result.files[0], or provider metadata.",
+          },
+          v19: buildContinuityLockMetadata(packet, outputKind),
         },
         error:
-          "Vercel AI Gateway returned successfully but no image URL/data URL was found.",
+          "Vercel AI Gateway image generation returned successfully, but no supported image payload was found.",
       };
     }
 
     return {
       status: "completed",
-      provider: "vercel-ai-gateway",
-      providerJobId: data.id ?? null,
+      provider: "vercel-ai-gateway-image",
+      providerJobId: extraction.providerJobId ?? extractProviderJobId(result),
       artifactType: outputKind,
-      artifactUrl: imageUrl,
-      mimeType: inferMimeTypeFromUrl(imageUrl) ?? "image/png",
+      artifactUrl:
+        extraction.image.url ??
+        `data:${extraction.image.mimeType};base64,${extraction.image.base64}`,
+      mimeType: extraction.image.mimeType,
       metadata: {
         packet,
         model,
-        gatewayResponseId: data.id ?? null,
-        gatewayModel: data.model ?? model,
-        usage: data.usage ?? null,
-        providerMetadata: data.providerMetadata ?? null,
+        size,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        gatewayResponseId: extractProviderJobId(result),
+        responseShape: summarizeImageResultShape(result),
+        response: safeProviderResponse(result),
+        v191: {
+          providerClass: "ai-gateway-image",
+          executionMode: "ai-sdk-generate-image",
+          delivery: extraction.image.url ? "external-url" : "base64-data-url",
+          extractionPath: extraction.path,
+          storageBacked: true,
+        },
         v19: buildContinuityLockMetadata(packet, outputKind),
       },
       error: null,
@@ -438,16 +421,28 @@ async function executeVercelGatewayRender(
   } catch (error) {
     return {
       status: "failed",
-      provider: "vercel-ai-gateway",
+      provider: "vercel-ai-gateway-image",
       providerJobId: null,
       artifactType: outputKind,
       artifactUrl: null,
-      mimeType: null,
-      metadata: { packet, model },
+      mimeType: "application/json",
+      metadata: {
+        packet,
+        model,
+        size,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        v191: {
+          providerClass: "ai-gateway-image",
+          executionMode: "exception",
+          message: error instanceof Error ? error.message : String(error),
+        },
+        v19: buildContinuityLockMetadata(packet, outputKind),
+      },
       error:
         error instanceof Error
           ? error.message
-          : "Unknown Vercel AI Gateway execution error.",
+          : "Unknown Vercel AI Gateway image execution error.",
     };
   }
 }
@@ -575,6 +570,178 @@ async function executeVercelGatewayVideoRender(
           : "Unknown Vercel AI Gateway video execution error.",
     };
   }
+}
+
+
+type ImageSize = `${number}x${number}`;
+
+type ExtractedImagePayload = {
+  url?: string;
+  base64?: string;
+  mimeType: string;
+};
+
+function getImageSize(): ImageSize {
+  const raw = process.env.SOLACEFRAME_IMAGE_SIZE || "1536x864";
+  return /^\d+x\d+$/.test(raw) ? (raw as ImageSize) : "1536x864";
+}
+
+function buildImageProviderOptions(model: string) {
+  if (model.startsWith("google/")) {
+    return {
+      google: {
+        aspectRatio: "16:9",
+      },
+    };
+  }
+
+  if (model.startsWith("openai/")) {
+    return {
+      openai: {
+        quality: "high",
+      },
+    };
+  }
+
+  if (model.startsWith("xai/")) {
+    return {
+      xai: {},
+    };
+  }
+
+  if (model.startsWith("black-forest-labs/") || model.startsWith("bfl/")) {
+    return {
+      blackForestLabs: {},
+    };
+  }
+
+  return {};
+}
+
+function extractGeneratedImage(result: Record<string, unknown>): {
+  image: ExtractedImagePayload | null;
+  path: string | null;
+  providerJobId: string | null;
+} {
+  const candidates: Array<{ value: unknown; path: string }> = [
+    { value: result.image, path: "result.image" },
+    {
+      value: Array.isArray(result.images) ? result.images[0] : null,
+      path: "result.images[0]",
+    },
+    {
+      value: Array.isArray(result.files) ? result.files[0] : null,
+      path: "result.files[0]",
+    },
+  ];
+
+  const providerMetadata = result.providerMetadata;
+  if (providerMetadata && typeof providerMetadata === "object") {
+    const metadata = providerMetadata as Record<string, unknown>;
+    for (const key of Object.keys(metadata)) {
+      const value = metadata[key];
+      if (value && typeof value === "object") {
+        const record = value as Record<string, unknown>;
+        candidates.push({ value: record.image, path: `providerMetadata.${key}.image` });
+        candidates.push({
+          value: Array.isArray(record.images) ? record.images[0] : null,
+          path: `providerMetadata.${key}.images[0]`,
+        });
+        candidates.push({ value: record.output, path: `providerMetadata.${key}.output` });
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    const image = normalizeImagePayload(candidate.value);
+    if (image) {
+      return {
+        image,
+        path: candidate.path,
+        providerJobId: extractProviderJobId(result),
+      };
+    }
+  }
+
+  return {
+    image: null,
+    path: null,
+    providerJobId: extractProviderJobId(result),
+  };
+}
+
+function normalizeImagePayload(value: unknown): ExtractedImagePayload | null {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    if (value.startsWith("data:image/")) {
+      const mimeType = value.slice(5, value.indexOf(";"));
+      return { base64: stripBase64Prefix(value), mimeType };
+    }
+    if (/^https?:\/\//i.test(value)) {
+      return { url: value, mimeType: inferMimeTypeFromUrl(value) ?? "image/png" };
+    }
+    if (/^[A-Za-z0-9+/=\n\r]+$/.test(value) && value.length > 1000) {
+      return { base64: value, mimeType: "image/png" };
+    }
+    return null;
+  }
+
+  if (value instanceof Uint8Array) {
+    return { base64: Buffer.from(value).toString("base64"), mimeType: "image/png" };
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return { base64: Buffer.from(value).toString("base64"), mimeType: "image/png" };
+  }
+
+  if (typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+
+  const mimeType =
+    stringValue(record.mediaType) ||
+    stringValue(record.mimeType) ||
+    stringValue(record.contentType) ||
+    "image/png";
+
+  const url =
+    stringValue(record.url) ||
+    stringValue(record.uri) ||
+    stringValue(record.downloadUrl) ||
+    stringValue(record.publicUrl);
+  if (url) return { url, mimeType: inferMimeTypeFromUrl(url) ?? mimeType };
+
+  const base64 =
+    stringValue(record.base64) ||
+    stringValue(record.b64_json) ||
+    stringValue(record.data);
+  if (base64) return { base64: stripBase64Prefix(base64), mimeType };
+
+  const uint8Array = record.uint8Array;
+  if (uint8Array instanceof Uint8Array) {
+    return { base64: Buffer.from(uint8Array).toString("base64"), mimeType };
+  }
+
+  const arrayBuffer = record.arrayBuffer;
+  if (arrayBuffer instanceof ArrayBuffer) {
+    return { base64: Buffer.from(arrayBuffer).toString("base64"), mimeType };
+  }
+
+  return null;
+}
+
+function summarizeImageResultShape(result: Record<string, unknown>) {
+  return {
+    keys: Object.keys(result),
+    hasImage: Boolean(result.image),
+    imagesLength: Array.isArray(result.images) ? result.images.length : null,
+    filesLength: Array.isArray(result.files) ? result.files.length : null,
+    hasProviderMetadata: Boolean(result.providerMetadata),
+    providerMetadataKeys:
+      result.providerMetadata && typeof result.providerMetadata === "object"
+        ? Object.keys(result.providerMetadata as Record<string, unknown>)
+        : [],
+  };
 }
 
 function coerceRecord(value: unknown, message: string): Record<string, unknown> {
