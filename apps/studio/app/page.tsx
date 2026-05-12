@@ -116,7 +116,7 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V15 · Execution Layer Delta</div>
+            <div className="sf-eyebrow">SolaceFrame V17 · Storage-Backed Execution Delta</div>
             <h1 className="sf-title">
               Governed runtime packets can now execute into image, video, or storyboard artifacts.
             </h1>
@@ -181,7 +181,7 @@ export default function Page() {
 
                 <p className="sf-muted">
                   Persists scene state, causal events, contradictions, continuity diffs, branch pressure,
-                  lineage, admissibility and a V15-ready render execution packet.
+                  lineage, admissibility and a V17-ready render execution packet.
                 </p>
               </section>
 
@@ -393,32 +393,79 @@ export default function Page() {
               <div className="sf-card-head">
                 <div>
                   <div className="sf-eyebrow">Execution Artifacts</div>
-                  <h2>Generated outputs and external renderer returns</h2>
+                  <h2>Storage-backed generated outputs and renderer returns</h2>
                 </div>
                 <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
               </div>
 
               {latestArtifact?.public_url && latestArtifact.mime_type?.startsWith("image/") ? (
-                <div className="sf-artifact-preview">
+                <div className="sf-artifact-hero">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={latestArtifact.public_url} alt="Latest SolaceFrame artifact" />
+                </div>
+              ) : latestArtifact?.public_url && latestArtifact.mime_type?.startsWith("video/") ? (
+                <div className="sf-artifact-hero">
+                  <video src={latestArtifact.public_url} controls playsInline />
                 </div>
               ) : null}
 
               <div className="sf-stack">
-                {runtime.artifacts.map((artifact) => (
-                  <div className="sf-row-card" key={artifact.id}>
-                    <div className="sf-row">
-                      <strong>{artifact.artifact_type}</strong>
-                      <span>{artifact.mime_type ?? "metadata"}</span>
+                {runtime.artifacts.map((artifact) => {
+                  const isImage = artifact.mime_type?.startsWith("image/");
+                  const isVideo = artifact.mime_type?.startsWith("video/");
+                  const isInlinePayload = artifact.public_url?.startsWith("data:");
+
+                  return (
+                    <div className="sf-row-card artifact-card" key={artifact.id}>
+                      <div className="sf-row">
+                        <strong>{artifact.artifact_type}</strong>
+                        <span>{artifact.mime_type ?? "metadata"}</span>
+                      </div>
+
+                      {artifact.public_url ? (
+                        <>
+                          {isImage ? (
+                            <div className="sf-artifact-preview">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={artifact.public_url}
+                                alt={artifact.artifact_type}
+                                className="sf-artifact-image"
+                              />
+                            </div>
+                          ) : null}
+
+                          {isVideo ? (
+                            <div className="sf-artifact-preview">
+                              <video
+                                src={artifact.public_url}
+                                controls
+                                playsInline
+                                className="sf-artifact-video"
+                              />
+                            </div>
+                          ) : null}
+
+                          <div className="sf-artifact-meta">
+                            <span className="sf-chip green">
+                              {artifact.storage_path ? "Supabase Storage" : isInlinePayload ? "Inline payload" : "External URL"}
+                            </span>
+                            {artifact.storage_path ? (
+                              <span className="sf-chip blue">{artifact.storage_path}</span>
+                            ) : null}
+                            {!isImage && !isVideo ? (
+                              <p className="sf-muted">
+                                {isInlinePayload ? "Inline artifact payload persisted." : "Artifact URL persisted."}
+                              </p>
+                            ) : null}
+                          </div>
+                        </>
+                      ) : (
+                        <p>Execution packet persisted without a public media URL.</p>
+                      )}
                     </div>
-                    {artifact.public_url ? (
-                      <p className="sf-break">{artifact.public_url}</p>
-                    ) : (
-                      <p>Execution packet persisted without a public media URL.</p>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
                 {runtime.artifacts.length === 0 ? (
                   <p className="sf-muted">No execution artifacts yet. Execute the latest render packet to create one.</p>
                 ) : null}
