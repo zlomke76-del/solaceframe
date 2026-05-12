@@ -339,14 +339,16 @@ async function executeVercelGatewayVideoRender(
   const startedAt = new Date().toISOString();
 
   try {
-    const result = (await generateVideo({
+    const rawResult = (await generateVideo({
       model,
       prompt,
       duration,
       aspectRatio,
       resolution,
       providerOptions: buildVideoProviderOptions(model),
-    })) as Record<string, unknown>;
+    })) as unknown;
+
+    const result = coerceRecord(rawResult, "Vercel AI Gateway video generation returned a non-object result.");
 
     const extraction = extractGeneratedVideo(result);
 
@@ -438,6 +440,14 @@ async function executeVercelGatewayVideoRender(
           : "Unknown Vercel AI Gateway video execution error.",
     };
   }
+}
+
+function coerceRecord(value: unknown, message: string): Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    throw new Error(message);
+  }
+
+  return value as Record<string, unknown>;
 }
 
 type ExtractedVideoPayload = {
