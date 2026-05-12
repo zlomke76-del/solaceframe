@@ -116,9 +116,9 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V18 · Live Video Execution Delta</div>
+            <div className="sf-eyebrow">SolaceFrame V18.1 · Video Completion Runtime</div>
             <h1 className="sf-title">
-              Governed runtime packets now execute into storage-backed images, storyboards, and AI Gateway video artifacts.
+              Governed runtime packets now complete into storage-backed images, storyboards, and video artifacts with provider-shape extraction.
             </h1>
           </div>
 
@@ -181,7 +181,7 @@ export default function Page() {
 
                 <p className="sf-muted">
                   Persists scene state, causal events, contradictions, continuity diffs, branch pressure,
-                  lineage, admissibility and a V17-ready render execution packet.
+                  lineage, admissibility and a V18.1-ready render execution packet.
                 </p>
               </section>
 
@@ -393,7 +393,7 @@ export default function Page() {
               <div className="sf-card-head">
                 <div>
                   <div className="sf-eyebrow">Execution Artifacts</div>
-                  <h2>Storage-backed generated outputs, video clips, and renderer returns</h2>
+                  <h2>Storage-backed generated outputs, video clips, and provider returns</h2>
                 </div>
                 <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
               </div>
@@ -461,7 +461,7 @@ export default function Page() {
                           </div>
                         </>
                       ) : (
-                        <p>Execution packet persisted without a public media URL.</p>
+                        <p>Execution metadata persisted without a public media URL. Check provider metadata for completion details.</p>
                       )}
                     </div>
                   );
