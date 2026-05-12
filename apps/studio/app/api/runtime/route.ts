@@ -1088,10 +1088,26 @@ function buildCanonicalPrompt(
   sceneText: string,
   packet: Record<string, unknown>,
 ) {
+  const compactPacket = {
+    mode: typeof packet.mode === "string" ? packet.mode : undefined,
+    driftRisk: typeof packet.driftRisk === "string" ? packet.driftRisk : undefined,
+    admissibility:
+      typeof packet.admissibility === "string" ? packet.admissibility : undefined,
+    preserve: Array.isArray(packet.preserve) ? packet.preserve.slice(0, 8) : [],
+    mutated: Array.isArray(packet.mutated) ? packet.mutated.slice(0, 8) : [],
+    violations: Array.isArray(packet.violations) ? packet.violations.slice(0, 8) : [],
+    renderConstraints: Array.isArray(packet.renderConstraints)
+      ? packet.renderConstraints.slice(0, 10)
+      : [],
+    causalEvents: Array.isArray(packet.causalEvents)
+      ? packet.causalEvents.slice(0, 10)
+      : [],
+  };
+
   return [
     "Governed synthetic media render.",
     `Scene: ${sceneText}`,
     "The render must obey causal constraints, continuity diffs, persistent object lineage, branch state, repair lineage, and unresolved contradictions.",
-    `Packet: ${JSON.stringify(packet)}`,
+    `Compact packet: ${JSON.stringify(compactPacket)}`,
   ].join("\n");
 }
