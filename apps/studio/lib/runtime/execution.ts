@@ -338,6 +338,22 @@ async function executeVercelGatewayVideoRender(
   const startedAt = new Date().toISOString();
 
   try {
+    const apiKey = getGatewayApiKey();
+
+    if (!apiKey) {
+      throw new Error(
+        "Missing VERCEL_AI_GATEWAY_API_KEY, AI_GATEWAY_API_KEY, or VERCEL_OIDC_TOKEN for video generation.",
+      );
+    }
+
+    // AI SDK v6 reads AI_GATEWAY_API_KEY for Gateway-backed video generation.
+    // Vercel projects often expose VERCEL_AI_GATEWAY_API_KEY instead, so bridge it
+    // explicitly before the dynamic SDK import. Without this, generateVideo can fail
+    // before making any outbound Gateway request, leaving only metadata artifacts.
+    if (!process.env.AI_GATEWAY_API_KEY && process.env.VERCEL_AI_GATEWAY_API_KEY) {
+      process.env.AI_GATEWAY_API_KEY = process.env.VERCEL_AI_GATEWAY_API_KEY;
+    }
+
     const ai = (await Function(
       "specifier",
       "return import(specifier)",
@@ -345,6 +361,9 @@ async function executeVercelGatewayVideoRender(
       experimental_generateVideo?: (
         input: Record<string, unknown>,
       ) => Promise<Record<string, unknown>>;
+      gateway?: {
+        video?: (modelId: string) => unknown;
+      };
     };
 
     const generateVideo = ai.experimental_generateVideo;
@@ -355,8 +374,12 @@ async function executeVercelGatewayVideoRender(
       );
     }
 
+    const gatewayVideoModel = ai.gateway?.video
+      ? ai.gateway.video(model)
+      : model;
+
     const result = await generateVideo({
-      model,
+      model: gatewayVideoModel,
       prompt,
       duration,
       aspectRatio,
