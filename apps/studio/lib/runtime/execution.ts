@@ -60,7 +60,7 @@ export function buildExecutionPacket(job: RuntimeRenderJob, state: RuntimeState,
   }));
 
   return {
-    version: "v16-live-provider-execution-packet",
+    version: "v17-storage-backed-provider-execution-packet",
     outputKind,
     renderJobId: job.id,
     sceneId: job.scene_id,
@@ -423,9 +423,9 @@ function buildPlaceholderSvgDataUrl(packet: Record<string, unknown>) {
   <defs><radialGradient id="g1" cx="20%" cy="10%" r="80%"><stop offset="0" stop-color="#facc15" stop-opacity=".35"/><stop offset=".45" stop-color="#0f172a"/><stop offset="1" stop-color="#020617"/></radialGradient><linearGradient id="g2" x1="0" x2="1"><stop offset="0" stop-color="#22c55e"/><stop offset=".55" stop-color="#facc15"/><stop offset="1" stop-color="#ef4444"/></linearGradient></defs>
   <rect width="1280" height="720" fill="url(#g1)"/><g opacity=".24" stroke="#ffffff" stroke-width="1"><path d="M90 560 C330 310 520 620 750 390 S1030 330 1190 145" fill="none"/><path d="M130 150 C330 300 510 100 690 235 S940 470 1160 360" fill="none"/></g>
   <rect x="72" y="72" width="1136" height="576" rx="36" fill="#020617" opacity=".74" stroke="#ffffff" stroke-opacity=".14"/>
-  <text x="112" y="142" fill="#facc15" font-size="20" font-family="Arial" font-weight="700" letter-spacing="5">SOLACEFRAME V16 EXECUTION ARTIFACT</text><text x="112" y="224" fill="#ffffff" font-size="56" font-family="Arial" font-weight="900">${title}</text><text x="112" y="282" fill="#cbd5e1" font-size="26" font-family="Arial">Governed fallback render · no live image provider response was used</text>
+  <text x="112" y="142" fill="#facc15" font-size="20" font-family="Arial" font-weight="700" letter-spacing="5">SOLACEFRAME V17 EXECUTION ARTIFACT</text><text x="112" y="224" fill="#ffffff" font-size="56" font-family="Arial" font-weight="900">${title}</text><text x="112" y="282" fill="#cbd5e1" font-size="26" font-family="Arial">Governed fallback render · no live image provider response was used</text>
   <rect x="112" y="360" width="600" height="22" rx="11" fill="#ffffff" opacity=".12"/><rect x="112" y="360" width="${barWidth}" height="22" rx="11" fill="url(#g2)"/>
-  <text x="112" y="438" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">World pressure: ${pressure}%</text><text x="112" y="492" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Branch: ${branchName}</text><text x="112" y="546" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Divergence: ${divergence}%</text><text x="112" y="610" fill="#94a3b8" font-size="20" font-family="Arial">V16 tries Vercel AI Gateway first when configured, then falls back safely.</text>
+  <text x="112" y="438" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">World pressure: ${pressure}%</text><text x="112" y="492" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Branch: ${branchName}</text><text x="112" y="546" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Divergence: ${divergence}%</text><text x="112" y="610" fill="#94a3b8" font-size="20" font-family="Arial">V17 stores generated media in Supabase Storage and returns durable artifact URLs.</text>
 </svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
