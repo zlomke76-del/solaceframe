@@ -23,6 +23,26 @@ export type RenderExecutionResult = {
   error: string | null;
 };
 
+type GatewayImage = {
+  type?: string;
+  image_url?: { url?: string };
+  url?: string;
+  b64_json?: string;
+  base64?: string;
+};
+
+type GatewayCompletionResponse = {
+  id?: string;
+  model?: string;
+  usage?: unknown;
+  providerMetadata?: unknown;
+  choices?: Array<{ message?: { content?: unknown; images?: GatewayImage[] } }>;
+  images?: GatewayImage[];
+  error?: { message?: string; type?: string; code?: string };
+};
+
+const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1";
+
 function decisionAllowsExecution(decision: Admissibility) {
   return decision === "allow" || decision === "conditional";
 }
@@ -40,7 +60,7 @@ export function buildExecutionPacket(job: RuntimeRenderJob, state: RuntimeState,
   }));
 
   return {
-    version: "v15-execution-packet",
+    version: "v16-live-provider-execution-packet",
     outputKind,
     renderJobId: job.id,
     sceneId: job.scene_id,
@@ -68,16 +88,13 @@ export function buildExecutionPacket(job: RuntimeRenderJob, state: RuntimeState,
   };
 }
 
-function buildRenderInstructions(
-  outputKind: RenderOutputKind,
-  prompt: string,
-  report: RuntimeAdmissibilityReport
-) {
+function buildRenderInstructions(outputKind: RenderOutputKind, prompt: string, report: RuntimeAdmissibilityReport) {
   const base = [
     "Render only the governed runtime state provided in the packet.",
     "Preserve character identity, appearance anchors, carried objects, injuries, environment damage, and branch context.",
     "Do not repair contradictions implicitly; render unresolved contradictions as visible tension or defer execution if required.",
-    "Maintain causal lineage and avoid introducing unsupported objects, locations, or authority changes."
+    "Maintain causal lineage and avoid introducing unsupported objects, locations, or authority changes.",
+    `Runtime admissibility decision: ${report.decision}. Survivability score: ${report.score}%.`
   ];
 
   if (outputKind === "video") {
@@ -100,24 +117,17 @@ function buildRenderInstructions(
       frames: 4,
       instructions: [
         ...base,
-        "Return storyboard frames as continuity checkpoints rather than independent images."
+        "Return a cinematic four-panel storyboard as one image grid.",
+        "Each panel must be a continuity checkpoint from the same governed branch, not an unrelated scene."
       ],
       prompt
     };
   }
 
-  return {
-    mode: "single-image",
-    instructions: base,
-    prompt
-  };
+  return { mode: "single-image", instructions: base, prompt };
 }
 
-export async function executeRenderRequest({
-  job,
-  outputKind,
-  state
-}: RenderExecutionRequest): Promise<RenderExecutionResult> {
+export async function executeRenderRequest({ job, outputKind, state }: RenderExecutionRequest): Promise<RenderExecutionResult> {
   if (!decisionAllowsExecution(state.admissibilityReport.decision)) {
     return {
       status: "blocked",
@@ -126,10 +136,7 @@ export async function executeRenderRequest({
       artifactType: outputKind,
       artifactUrl: null,
       mimeType: null,
-      metadata: {
-        reason: "Runtime admissibility blocked execution.",
-        report: state.admissibilityReport
-      },
+      metadata: { reason: "Runtime admissibility blocked execution.", report: state.admissibilityReport },
       error: "Runtime admissibility blocked render execution."
     };
   }
@@ -137,25 +144,221 @@ export async function executeRenderRequest({
   const packet = buildExecutionPacket(job, state, outputKind);
   const webhookUrl = process.env.SOLACEFRAME_RENDER_WEBHOOK_URL;
 
-  if (webhookUrl) {
-    return executeWebhookRender(webhookUrl, packet, outputKind);
+  if (webhookUrl) return executeWebhookRender(webhookUrl, packet, outputKind);
+
+  if (shouldUseVercelGateway(outputKind)) {
+    const gatewayResult = await executeVercelGatewayRender(packet, outputKind);
+    if (gatewayResult.status === "completed") return gatewayResult;
+    if (process.env.SOLACEFRAME_DISABLE_PLACEHOLDER_FALLBACK === "true") return gatewayResult;
+
+    const placeholder = executeLocalPlaceholder(packet, outputKind);
+    return {
+      ...placeholder,
+      metadata: {
+        ...placeholder.metadata,
+        fallbackReason: gatewayResult.error,
+        gatewayAttempt: gatewayResult.metadata
+      }
+    };
   }
 
   return executeLocalPlaceholder(packet, outputKind);
 }
 
-async function executeWebhookRender(
-  webhookUrl: string,
-  packet: Record<string, unknown>,
-  outputKind: RenderOutputKind
-): Promise<RenderExecutionResult> {
+function shouldUseVercelGateway(outputKind: RenderOutputKind) {
+  if (process.env.SOLACEFRAME_FORCE_PLACEHOLDER_RENDER === "true") return false;
+  if (outputKind === "video") return false;
+  return Boolean(getGatewayApiKey());
+}
+
+function getGatewayApiKey() {
+  return process.env.VERCEL_AI_GATEWAY_API_KEY || process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || null;
+}
+
+async function executeVercelGatewayRender(packet: Record<string, unknown>, outputKind: RenderOutputKind): Promise<RenderExecutionResult> {
+  const apiKey = getGatewayApiKey();
+
+  if (!apiKey) {
+    return {
+      status: "failed",
+      provider: "vercel-ai-gateway",
+      providerJobId: null,
+      artifactType: outputKind,
+      artifactUrl: null,
+      mimeType: null,
+      metadata: { packet, reason: "No Vercel AI Gateway credential present." },
+      error: "Missing VERCEL_AI_GATEWAY_API_KEY, AI_GATEWAY_API_KEY, or VERCEL_OIDC_TOKEN."
+    };
+  }
+
+  const model = process.env.SOLACEFRAME_IMAGE_MODEL || "google/gemini-3-pro-image";
+  const prompt = buildGatewayImagePrompt(packet, outputKind);
+
+  try {
+    const response = await fetch(`${AI_GATEWAY_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        modalities: ["text", "image"],
+        messages: [
+          {
+            role: "system",
+            content: "You are a governed synthetic continuity renderer. Render the requested media from the runtime packet only. Preserve identity, branch state, visible damage, carried objects, environmental continuity, and unresolved contradictions. Do not invent unsupported world facts."
+          },
+          { role: "user", content: prompt }
+        ]
+      })
+    });
+
+    const data = (await response.json().catch(() => ({}))) as GatewayCompletionResponse;
+
+    if (!response.ok) {
+      return {
+        status: "failed",
+        provider: "vercel-ai-gateway",
+        providerJobId: data.id ?? null,
+        artifactType: outputKind,
+        artifactUrl: null,
+        mimeType: null,
+        metadata: { packet, model, status: response.status, response: data },
+        error: data.error?.message || `Vercel AI Gateway render failed with HTTP ${response.status}`
+      };
+    }
+
+    const imageUrl = extractGatewayImageUrl(data);
+
+    if (!imageUrl) {
+      return {
+        status: "failed",
+        provider: "vercel-ai-gateway",
+        providerJobId: data.id ?? null,
+        artifactType: outputKind,
+        artifactUrl: null,
+        mimeType: null,
+        metadata: { packet, model, response: data, assistantContent: data.choices?.[0]?.message?.content ?? null },
+        error: "Vercel AI Gateway returned successfully but no image URL/data URL was found."
+      };
+    }
+
+    return {
+      status: "completed",
+      provider: "vercel-ai-gateway",
+      providerJobId: data.id ?? null,
+      artifactType: outputKind,
+      artifactUrl: imageUrl,
+      mimeType: inferMimeTypeFromUrl(imageUrl) ?? "image/png",
+      metadata: {
+        packet,
+        model,
+        gatewayResponseId: data.id ?? null,
+        gatewayModel: data.model ?? model,
+        usage: data.usage ?? null,
+        providerMetadata: data.providerMetadata ?? null
+      },
+      error: null
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      provider: "vercel-ai-gateway",
+      providerJobId: null,
+      artifactType: outputKind,
+      artifactUrl: null,
+      mimeType: null,
+      metadata: { packet, model },
+      error: error instanceof Error ? error.message : "Unknown Vercel AI Gateway execution error."
+    };
+  }
+}
+
+function buildGatewayImagePrompt(packet: Record<string, unknown>, outputKind: RenderOutputKind) {
+  const continuity = packet.continuity as Record<string, unknown> | undefined;
+  const world = continuity?.world as { name?: string; pressure?: number; state?: unknown } | undefined;
+  const branch = continuity?.activeBranch as { name?: string; divergence_score?: number; status?: string } | undefined;
+  const characters = Array.isArray(continuity?.characters) ? continuity.characters : [];
+  const causalEvents = Array.isArray(continuity?.causalEvents) ? continuity.causalEvents.slice(0, 8) : [];
+  const governance = packet.governance as Record<string, unknown> | undefined;
+  const rendering = packet.rendering as Record<string, unknown> | undefined;
+  const compiledPacket = packet.compiledPacket as Record<string, unknown> | undefined;
+  const prompt = String(packet.prompt ?? rendering?.prompt ?? "Render the governed runtime state.");
+  const format = outputKind === "storyboard"
+    ? "Create one cinematic 16:9 four-panel storyboard image. The panels must show sequential continuity checkpoints from the same branch."
+    : "Create one cinematic 16:9 production still image.";
+
+  return [
+    format,
+    "This is not concept art detached from state. It is a governed render of the exact runtime packet.",
+    "No logos, no captions, no UI overlays, no text labels, and no placeholder graphics in the generated image.",
+    "Visual style: sophisticated cinematic realism, high detail, coherent lighting, practical environment design, persistent objects, no surreal artifacts unless required by the runtime state.",
+    "Primary scene prompt:", prompt,
+    "Runtime world:", JSON.stringify({ name: world?.name, pressure: world?.pressure, state: world?.state }, null, 2),
+    "Active branch:", JSON.stringify({ name: branch?.name, status: branch?.status, divergence: branch?.divergence_score }, null, 2),
+    "Characters and continuity anchors:", JSON.stringify(characters, null, 2),
+    "Recent causal events:", JSON.stringify(causalEvents, null, 2),
+    "Governance constraints:", JSON.stringify(governance, null, 2),
+    "Compiled render packet:", JSON.stringify(compiledPacket ?? {}, null, 2)
+  ].join("\n\n");
+}
+
+function extractGatewayImageUrl(data: GatewayCompletionResponse) {
+  const topLevelImage = firstUrlFromImages(data.images);
+  if (topLevelImage) return topLevelImage;
+
+  for (const choice of data.choices ?? []) {
+    const message = choice.message;
+    const imageFromArray = firstUrlFromImages(message?.images);
+    if (imageFromArray) return imageFromArray;
+
+    const imageFromContent = firstUrlFromContent(message?.content);
+    if (imageFromContent) return imageFromContent;
+  }
+
+  return null;
+}
+
+function firstUrlFromImages(images: GatewayImage[] | undefined) {
+  for (const image of images ?? []) {
+    if (typeof image.image_url?.url === "string") return image.image_url.url;
+    if (typeof image.url === "string") return image.url;
+    if (typeof image.b64_json === "string") return `data:image/png;base64,${image.b64_json}`;
+    if (typeof image.base64 === "string") return `data:image/png;base64,${image.base64}`;
+  }
+  return null;
+}
+
+function firstUrlFromContent(content: unknown): string | null {
+  if (typeof content === "string") {
+    const dataUrlMatch = content.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[a-zA-Z0-9+/=]+/);
+    if (dataUrlMatch?.[0]) return dataUrlMatch[0];
+    const httpsImageMatch = content.match(/https?:\/\/\S+?\.(?:png|jpg|jpeg|webp|gif)(?:\?\S*)?/i);
+    if (httpsImageMatch?.[0]) return httpsImageMatch[0];
+    return null;
+  }
+
+  if (!Array.isArray(content)) return null;
+
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as Record<string, unknown>;
+    if (record.type === "image_url") {
+      const imageUrl = record.image_url as { url?: unknown } | undefined;
+      if (typeof imageUrl?.url === "string") return imageUrl.url;
+    }
+    if (typeof record.url === "string") return record.url;
+    if (typeof record.b64_json === "string") return `data:image/png;base64,${record.b64_json}`;
+    if (typeof record.base64 === "string") return `data:image/png;base64,${record.base64}`;
+  }
+  return null;
+}
+
+async function executeWebhookRender(webhookUrl: string, packet: Record<string, unknown>, outputKind: RenderOutputKind): Promise<RenderExecutionResult> {
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(process.env.SOLACEFRAME_RENDER_WEBHOOK_SECRET
-        ? { Authorization: `Bearer ${process.env.SOLACEFRAME_RENDER_WEBHOOK_SECRET}` }
-        : {})
+      ...(process.env.SOLACEFRAME_RENDER_WEBHOOK_SECRET ? { Authorization: `Bearer ${process.env.SOLACEFRAME_RENDER_WEBHOOK_SECRET}` } : {})
     },
     body: JSON.stringify(packet)
   });
@@ -189,7 +392,6 @@ async function executeWebhookRender(
 
 function executeLocalPlaceholder(packet: Record<string, unknown>, outputKind: RenderOutputKind): RenderExecutionResult {
   const artifactUrl = outputKind === "image" ? buildPlaceholderSvgDataUrl(packet) : null;
-
   return {
     status: "completed",
     provider: "solaceframe-local-placeholder",
@@ -199,10 +401,9 @@ function executeLocalPlaceholder(packet: Record<string, unknown>, outputKind: Re
     mimeType: outputKind === "image" ? "image/svg+xml" : "application/json",
     metadata: {
       packet,
-      note:
-        outputKind === "image"
-          ? "Local SVG placeholder generated. Add SOLACEFRAME_RENDER_WEBHOOK_URL to execute against a real image/video provider."
-          : "Storyboard/video execution packet generated. Add SOLACEFRAME_RENDER_WEBHOOK_URL to execute against a real renderer."
+      note: outputKind === "image"
+        ? "Local SVG placeholder generated. Add VERCEL_AI_GATEWAY_API_KEY or SOLACEFRAME_RENDER_WEBHOOK_URL to execute against a real image/video provider."
+        : "Storyboard/video execution packet generated. Add a supported renderer to execute against real media."
     },
     error: null
   };
@@ -216,29 +417,16 @@ function buildPlaceholderSvgDataUrl(packet: Record<string, unknown>) {
   const pressure = escapeSvg(String(world?.pressure ?? "unknown"));
   const branchName = escapeSvg(String(branch?.name ?? "active branch"));
   const divergence = escapeSvg(String(branch?.divergence_score ?? "0"));
+  const barWidth = Math.max(24, Math.min(600, Number(pressure) * 6 || 220));
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="864" viewBox="0 0 1536 864">
-  <defs>
-    <radialGradient id="g1" cx="20%" cy="10%" r="80%"><stop offset="0" stop-color="#facc15" stop-opacity=".35"/><stop offset=".45" stop-color="#0f172a"/><stop offset="1" stop-color="#020617"/></radialGradient>
-    <linearGradient id="g2" x1="0" x2="1"><stop offset="0" stop-color="#22c55e"/><stop offset=".55" stop-color="#facc15"/><stop offset="1" stop-color="#ef4444"/></linearGradient>
-  </defs>
-  <rect width="1536" height="864" fill="url(#g1)"/>
-  <g opacity=".24" stroke="#ffffff" stroke-width="1">
-    <path d="M140 640 C420 380 580 720 840 460 S1240 360 1390 170" fill="none"/>
-    <path d="M160 180 C370 340 530 120 730 270 S1110 560 1360 420" fill="none"/>
-  </g>
-  <rect x="96" y="92" width="1344" height="680" rx="42" fill="#020617" opacity=".72" stroke="#ffffff" stroke-opacity=".14"/>
-  <text x="140" y="170" fill="#facc15" font-size="24" font-family="Arial" font-weight="700" letter-spacing="6">SOLACEFRAME V15 EXECUTION ARTIFACT</text>
-  <text x="140" y="260" fill="#ffffff" font-size="68" font-family="Arial" font-weight="900">${title}</text>
-  <text x="140" y="326" fill="#cbd5e1" font-size="30" font-family="Arial">Governed placeholder render · continuity packet executed locally</text>
-  <rect x="140" y="430" width="720" height="24" rx="12" fill="#ffffff" opacity=".12"/>
-  <rect x="140" y="430" width="${Math.max(20, Math.min(720, Number(pressure) * 7.2 || 240))}" height="24" rx="12" fill="url(#g2)"/>
-  <text x="140" y="512" fill="#ffffff" font-size="34" font-family="Arial" font-weight="700">World pressure: ${pressure}%</text>
-  <text x="140" y="570" fill="#ffffff" font-size="34" font-family="Arial" font-weight="700">Branch: ${branchName}</text>
-  <text x="140" y="628" fill="#ffffff" font-size="34" font-family="Arial" font-weight="700">Divergence: ${divergence}%</text>
-  <text x="140" y="704" fill="#94a3b8" font-size="24" font-family="Arial">Set SOLACEFRAME_RENDER_WEBHOOK_URL to route this packet into an external image/video renderer.</text>
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet">
+  <defs><radialGradient id="g1" cx="20%" cy="10%" r="80%"><stop offset="0" stop-color="#facc15" stop-opacity=".35"/><stop offset=".45" stop-color="#0f172a"/><stop offset="1" stop-color="#020617"/></radialGradient><linearGradient id="g2" x1="0" x2="1"><stop offset="0" stop-color="#22c55e"/><stop offset=".55" stop-color="#facc15"/><stop offset="1" stop-color="#ef4444"/></linearGradient></defs>
+  <rect width="1280" height="720" fill="url(#g1)"/><g opacity=".24" stroke="#ffffff" stroke-width="1"><path d="M90 560 C330 310 520 620 750 390 S1030 330 1190 145" fill="none"/><path d="M130 150 C330 300 510 100 690 235 S940 470 1160 360" fill="none"/></g>
+  <rect x="72" y="72" width="1136" height="576" rx="36" fill="#020617" opacity=".74" stroke="#ffffff" stroke-opacity=".14"/>
+  <text x="112" y="142" fill="#facc15" font-size="20" font-family="Arial" font-weight="700" letter-spacing="5">SOLACEFRAME V16 EXECUTION ARTIFACT</text><text x="112" y="224" fill="#ffffff" font-size="56" font-family="Arial" font-weight="900">${title}</text><text x="112" y="282" fill="#cbd5e1" font-size="26" font-family="Arial">Governed fallback render · no live image provider response was used</text>
+  <rect x="112" y="360" width="600" height="22" rx="11" fill="#ffffff" opacity=".12"/><rect x="112" y="360" width="${barWidth}" height="22" rx="11" fill="url(#g2)"/>
+  <text x="112" y="438" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">World pressure: ${pressure}%</text><text x="112" y="492" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Branch: ${branchName}</text><text x="112" y="546" fill="#ffffff" font-size="32" font-family="Arial" font-weight="700">Divergence: ${divergence}%</text><text x="112" y="610" fill="#94a3b8" font-size="20" font-family="Arial">V16 tries Vercel AI Gateway first when configured, then falls back safely.</text>
 </svg>`;
-
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
@@ -255,4 +443,16 @@ function inferMimeType(outputKind: RenderOutputKind) {
   if (outputKind === "image") return "image/png";
   if (outputKind === "video") return "video/mp4";
   return "application/json";
+}
+
+function inferMimeTypeFromUrl(url: string) {
+  if (url.startsWith("data:image/png")) return "image/png";
+  if (url.startsWith("data:image/jpeg") || url.startsWith("data:image/jpg")) return "image/jpeg";
+  if (url.startsWith("data:image/webp")) return "image/webp";
+  if (url.startsWith("data:image/svg")) return "image/svg+xml";
+  if (/\.png(?:\?|$)/i.test(url)) return "image/png";
+  if (/\.(jpg|jpeg)(?:\?|$)/i.test(url)) return "image/jpeg";
+  if (/\.webp(?:\?|$)/i.test(url)) return "image/webp";
+  if (/\.svg(?:\?|$)/i.test(url)) return "image/svg+xml";
+  return null;
 }
