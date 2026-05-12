@@ -335,84 +335,136 @@ async function executeVercelGatewayRender(
   packet: Record<string, unknown>,
   outputKind: RenderOutputKind,
 ): Promise<RenderExecutionResult> {
+  const apiKey = getGatewayApiKey();
+
+  if (!apiKey) {
+    return {
+      status: "failed",
+      provider: "vercel-ai-gateway",
+      providerJobId: null,
+      artifactType: outputKind,
+      artifactUrl: null,
+      mimeType: null,
+      metadata: { packet, reason: "No Vercel AI Gateway credential present." },
+      error:
+        "Missing VERCEL_AI_GATEWAY_API_KEY, AI_GATEWAY_API_KEY, or VERCEL_OIDC_TOKEN.",
+    };
+  }
+
   const model =
     process.env.SOLACEFRAME_IMAGE_MODEL || "google/gemini-3-pro-image";
-  const promptText = buildGatewayImagePrompt(packet, outputKind);
+  const prompt = buildGatewayImagePrompt(packet, outputKind);
   const visualAnchor = getPrimaryVisualAnchor(packet);
-  const size = getImageSize();
   const startedAt = new Date().toISOString();
-  const prompt = visualAnchor
-    ? { text: promptText, images: [visualAnchor.publicUrl] }
-    : promptText;
 
   try {
-    const rawResult = (await generateImage({
-      model,
-      prompt,
-      n: 1,
-      size,
-      providerOptions: buildImageProviderOptions(model) as any,
-    } as any)) as unknown;
+    const response = await fetch(`${AI_GATEWAY_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        modalities: ["text", "image"],
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a governed synthetic continuity renderer. Render the requested media from the runtime packet only. Preserve identity, branch state, visible damage, carried objects, environmental continuity, and unresolved contradictions. Do not invent unsupported world facts. If a continuity anchor is present, preserve its visible identity and scene grammar as a reference in the generated output.",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
 
-    const result = coerceRecord(
-      rawResult,
-      "Vercel AI Gateway image generation returned a non-object result.",
-    );
-    const extraction = extractGeneratedImage(result);
+    const data = (await response
+      .json()
+      .catch(() => ({}))) as GatewayCompletionResponse;
 
-    if (!extraction.image) {
+    if (!response.ok) {
       return {
         status: "failed",
-        provider: "vercel-ai-gateway-image",
-        providerJobId: extractProviderJobId(result),
+        provider: "vercel-ai-gateway",
+        providerJobId: data.id ?? null,
         artifactType: outputKind,
         artifactUrl: null,
-        mimeType: "application/json",
+        mimeType: null,
         metadata: {
           packet,
           model,
-          size,
           startedAt,
           completedAt: new Date().toISOString(),
-          responseShape: summarizeImageResultShape(result),
-          response: safeProviderResponse(result),
-          v191: {
+          status: response.status,
+          response: data,
+          v192: {
             providerClass: "ai-gateway-image",
-            executionMode: "ai-sdk-generate-image",
+            executionMode: "chat-completions-image-modalities",
             reason:
-              "No supported image payload was found on result.image, result.images[0], result.files[0], or provider metadata.",
+              "AI SDK generateImage was rejected by the selected model/provider. V19.2 uses the known-working image-modalities Gateway route.",
           },
           v19: buildContinuityLockMetadata(packet, outputKind),
         },
         error:
-          "Vercel AI Gateway image generation returned successfully, but no supported image payload was found.",
+          data.error?.message ||
+          `Vercel AI Gateway render failed with HTTP ${response.status}`,
+      };
+    }
+
+    const imageUrl = extractGatewayImageUrl(data);
+
+    if (!imageUrl) {
+      return {
+        status: "failed",
+        provider: "vercel-ai-gateway",
+        providerJobId: data.id ?? null,
+        artifactType: outputKind,
+        artifactUrl: null,
+        mimeType: null,
+        metadata: {
+          packet,
+          model,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          response: data,
+          assistantContent: data.choices?.[0]?.message?.content ?? null,
+          visualAnchor,
+          v192: {
+            providerClass: "ai-gateway-image",
+            executionMode: "chat-completions-image-modalities",
+            reason:
+              "Gateway returned successfully, but no image URL or base64 image payload was found.",
+          },
+          v19: buildContinuityLockMetadata(packet, outputKind),
+        },
+        error:
+          "Vercel AI Gateway returned successfully but no image URL/data URL was found.",
       };
     }
 
     return {
       status: "completed",
-      provider: "vercel-ai-gateway-image",
-      providerJobId: extraction.providerJobId ?? extractProviderJobId(result),
+      provider: "vercel-ai-gateway",
+      providerJobId: data.id ?? null,
       artifactType: outputKind,
-      artifactUrl:
-        extraction.image.url ??
-        `data:${extraction.image.mimeType};base64,${extraction.image.base64}`,
-      mimeType: extraction.image.mimeType,
+      artifactUrl: imageUrl,
+      mimeType: inferMimeTypeFromUrl(imageUrl) ?? "image/png",
       metadata: {
         packet,
         model,
-        size,
         startedAt,
         completedAt: new Date().toISOString(),
-        gatewayResponseId: extractProviderJobId(result),
-        responseShape: summarizeImageResultShape(result),
-        response: safeProviderResponse(result),
-        v191: {
+        gatewayResponseId: data.id ?? null,
+        gatewayModel: data.model ?? model,
+        usage: data.usage ?? null,
+        providerMetadata: data.providerMetadata ?? null,
+        visualAnchor,
+        v192: {
           providerClass: "ai-gateway-image",
-          executionMode: "ai-sdk-generate-image",
-          delivery: extraction.image.url ? "external-url" : "base64-data-url",
-          extractionPath: extraction.path,
-          storageBacked: true,
+          executionMode: "chat-completions-image-modalities",
+          delivery: imageUrl.startsWith("data:") ? "base64-data-url" : "external-url",
+          storageBacked: imageUrl.startsWith("data:"),
         },
         v19: buildContinuityLockMetadata(packet, outputKind),
       },
@@ -421,18 +473,17 @@ async function executeVercelGatewayRender(
   } catch (error) {
     return {
       status: "failed",
-      provider: "vercel-ai-gateway-image",
+      provider: "vercel-ai-gateway",
       providerJobId: null,
       artifactType: outputKind,
       artifactUrl: null,
-      mimeType: "application/json",
+      mimeType: null,
       metadata: {
         packet,
         model,
-        size,
         startedAt,
         completedAt: new Date().toISOString(),
-        v191: {
+        v192: {
           providerClass: "ai-gateway-image",
           executionMode: "exception",
           message: error instanceof Error ? error.message : String(error),
@@ -442,7 +493,7 @@ async function executeVercelGatewayRender(
       error:
         error instanceof Error
           ? error.message
-          : "Unknown Vercel AI Gateway image execution error.",
+          : "Unknown Vercel AI Gateway execution error.",
     };
   }
 }
