@@ -8,6 +8,7 @@ import {
   mutateCharacters,
   mutateWorld
 } from "@/lib/runtime/engine";
+import { executeRenderRequest } from "@/lib/runtime/execution";
 import type {
   RuntimeCausalEvent,
   RuntimeCharacter,
@@ -17,7 +18,7 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-type RuntimeAction = "compile_scene" | "fork_branch" | "resolve_contradiction";
+type RuntimeAction = "compile_scene" | "fork_branch" | "resolve_contradiction" | "execute_render_job";
 
 function normalizeRuntimeError(error: unknown) {
   if (error instanceof Error) {
@@ -70,6 +71,10 @@ export async function POST(request: Request) {
 
     if (action === "resolve_contradiction") {
       return await resolveContradiction(body);
+    }
+
+    if (action === "execute_render_job") {
+      return await executeRenderJob(body);
     }
 
     return await compileScene(body);
@@ -215,9 +220,11 @@ async function compileScene(body: Record<string, unknown>) {
       scene_id: scene.id,
       branch_id: state.activeBranch.id,
       status: analysis.admissibility === "blocked" ? "blocked" : "queued",
-      model_route: "vercel-ai-gateway:pending",
+      model_route: "solaceframe-execution-router",
       prompt: buildCanonicalPrompt(sceneText, analysis.packet),
-      packet: analysis.packet
+      packet: analysis.packet,
+      output_kind: "image",
+      execution_mode: "manual"
     })
     .select("*")
     .single();
@@ -271,6 +278,109 @@ async function compileScene(body: Record<string, unknown>) {
 
   const nextState = await loadRuntimeState(projectId);
   return NextResponse.json({ ok: true, analysis, state: nextState });
+}
+
+async function executeRenderJob(body: Record<string, unknown>) {
+  const renderJobId = String(body.renderJobId || "").trim();
+  const outputKind = String(body.outputKind || "image") as "image" | "video" | "storyboard";
+
+  if (!renderJobId) {
+    return NextResponse.json({ ok: false, error: "renderJobId is required" }, { status: 400 });
+  }
+
+  if (!["image", "video", "storyboard"].includes(outputKind)) {
+    return NextResponse.json({ ok: false, error: "outputKind must be image, video, or storyboard" }, { status: 400 });
+  }
+
+  const projectId = await ensureSeedRuntime();
+  const supabase = getSupabaseAdmin().schema("solaceframe");
+  const state = await loadRuntimeState(projectId);
+  const job = state.renderJobs.find((item) => item.id === renderJobId);
+
+  if (!job) {
+    return NextResponse.json({ ok: false, error: "Render job not found" }, { status: 404 });
+  }
+
+  if (job.status === "blocked") {
+    return NextResponse.json({ ok: false, error: "Render job is blocked by prior admissibility state" }, { status: 409 });
+  }
+
+  const startedAt = new Date().toISOString();
+
+  const { error: runningError } = await supabase
+    .from("render_jobs")
+    .update({
+      status: "running",
+      output_kind: outputKind,
+      execution_mode: process.env.SOLACEFRAME_RENDER_WEBHOOK_URL ? "external-webhook" : "local-placeholder",
+      started_at: startedAt,
+      error: null
+    })
+    .eq("id", job.id);
+
+  if (runningError) throw runningError;
+
+  const execution = await executeRenderRequest({ job, outputKind, state });
+  const completedAt = new Date().toISOString();
+
+  const { data: artifact, error: artifactError } = await supabase
+    .from("artifacts")
+    .insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      branch_id: job.branch_id,
+      artifact_type: execution.artifactType,
+      storage_path: null,
+      public_url: execution.artifactUrl,
+      mime_type: execution.mimeType,
+      metadata: execution.metadata
+    })
+    .select("*")
+    .single();
+
+  if (artifactError) throw artifactError;
+
+  const { error: jobError } = await supabase
+    .from("render_jobs")
+    .update({
+      status: execution.status,
+      model_route: execution.provider,
+      provider: execution.provider,
+      provider_job_id: execution.providerJobId,
+      output_url: execution.artifactUrl,
+      artifact_id: artifact.id,
+      completed_at: completedAt,
+      error: execution.error
+    })
+    .eq("id", job.id);
+
+  if (jobError) throw jobError;
+
+  const { error: lineageError } = await supabase
+    .from("lineage_events")
+    .insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      event_type: execution.status === "completed" ? "render-executed" : `render-${execution.status}`,
+      summary: `Render job ${execution.status}: ${outputKind}`,
+      payload: {
+        renderJobId: job.id,
+        artifactId: artifact.id,
+        provider: execution.provider,
+        providerJobId: execution.providerJobId,
+        outputKind,
+        startedAt,
+        completedAt,
+        error: execution.error
+      }
+    });
+
+  if (lineageError) throw lineageError;
+
+  const nextState = await loadRuntimeState(projectId);
+  return NextResponse.json({ ok: true, execution, artifact, state: nextState });
 }
 
 async function forkBranch(body: Record<string, unknown>) {
@@ -499,6 +609,7 @@ async function loadRuntimeState(projectId: string) {
     charactersResult,
     scenesResult,
     renderJobsResult,
+    artifactsResult,
     lineageEventsResult,
     continuityDiffsResult,
     causalEventsResult,
@@ -508,6 +619,7 @@ async function loadRuntimeState(projectId: string) {
     supabase.from("characters").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
     supabase.from("scenes").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
     supabase.from("render_jobs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+    supabase.from("artifacts").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
     supabase.from("lineage_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
     supabase.from("continuity_diffs").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
     supabase.from("causal_events").select("*").eq("project_id", projectId).order("created_at", { ascending: false }).limit(40),
@@ -518,6 +630,7 @@ async function loadRuntimeState(projectId: string) {
   if (charactersResult.error) throw charactersResult.error;
   if (scenesResult.error) throw scenesResult.error;
   if (renderJobsResult.error) throw renderJobsResult.error;
+  if (artifactsResult.error) throw artifactsResult.error;
   if (lineageEventsResult.error) throw lineageEventsResult.error;
   if (continuityDiffsResult.error) throw continuityDiffsResult.error;
   if (causalEventsResult.error) throw causalEventsResult.error;
@@ -540,6 +653,7 @@ async function loadRuntimeState(projectId: string) {
     characters: (charactersResult.data ?? []) as RuntimeCharacter[],
     scenes: scenesResult.data ?? [],
     renderJobs: renderJobsResult.data ?? [],
+    artifacts: artifactsResult.data ?? [],
     lineageEvents: lineageEventsResult.data ?? [],
     continuityDiffs: continuityDiffsResult.data ?? [],
     causalEvents,
