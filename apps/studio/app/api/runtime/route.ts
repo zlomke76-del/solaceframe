@@ -9,6 +9,7 @@ import {
   mutateWorld,
 } from "@/lib/runtime/engine";
 import { executeRenderRequest } from "@/lib/runtime/execution";
+import { applySyntheticMemoryTransition } from "@/lib/runtime/synthetic-memory";
 import type {
   RuntimeArtifact,
   RuntimeCausalEvent,
@@ -169,12 +170,21 @@ async function compileScene(body: Record<string, unknown>) {
     admissibilityReport: state.admissibilityReport,
   };
 
-  const nextWorld = mutateWorld(state.world, analysis);
-  const nextCharacters = mutateCharacters(
+  const baseWorld = mutateWorld(state.world, analysis);
+  const baseCharacters = mutateCharacters(
     state.characters,
     sceneText,
     analysis,
   );
+  const syntheticMemory = applySyntheticMemoryTransition({
+    sceneText,
+    analysis,
+    world: baseWorld,
+    characters: baseCharacters,
+    priorCausalEvents: state.causalEvents,
+  });
+  const nextWorld = syntheticMemory.world;
+  const nextCharacters = syntheticMemory.characters;
   const branchDelta = computeBranchDelta(analysis);
 
   const { data: scene, error: sceneError } = await supabase
@@ -329,6 +339,7 @@ async function compileScene(body: Record<string, unknown>) {
       causalEvents: analysis.causalEvents,
       contradictions: analysis.contradictions,
       renderConstraints: analysis.renderConstraints,
+      syntheticMemory: syntheticMemory.report,
     },
   });
 
@@ -1991,6 +2002,10 @@ function buildCanonicalPrompt(
     renderConstraints: Array.isArray(packet.renderConstraints)
       ? packet.renderConstraints.slice(0, 10)
       : [],
+    syntheticMemory:
+      typeof packet.syntheticMemory === "object" && packet.syntheticMemory !== null
+        ? packet.syntheticMemory
+        : undefined,
     causalEvents: Array.isArray(packet.causalEvents)
       ? packet.causalEvents.slice(0, 10)
       : [],
@@ -1999,7 +2014,8 @@ function buildCanonicalPrompt(
   return [
     "Governed synthetic media render.",
     `Scene: ${sceneText}`,
-    "The render must obey causal constraints, continuity diffs, persistent object lineage, branch state, repair lineage, and unresolved contradictions.",
+    "The render must obey causal constraints, continuity diffs, persistent object lineage, anatomical memory, spatial state, branch state, repair lineage, and unresolved contradictions.",
+    "V24 memory rule: scars, tattoos, bandage body location, wetness, wardrobe damage, object placement, and room lighting/source logic persist until changed by an admissible scene.",
     `Compact packet: ${JSON.stringify(compactPacket)}`,
   ].join("\n");
 }
