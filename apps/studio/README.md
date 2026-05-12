@@ -1,21 +1,14 @@
-# SolaceFrame Studio V18
+# SolaceFrame Studio V18.1
 
-V18 adds live AI Gateway video execution to the existing governed runtime flow.
+V18.1 upgrades the video execution adapter to complete provider-returned video payloads into storage-backed artifacts.
 
-Default video model:
+The runtime now recognizes:
 
-```text
-bytedance/seedance-2.0-fast
-```
+- `result.video`
+- `result.videos[0]`
+- `result.files[0]`
+- `providerMetadata.*.video`
+- `providerMetadata.*.videos[0]`
+- URL, base64, data URL, Uint8Array, and ArrayBuffer delivery
 
-Override with:
-
-```text
-SOLACEFRAME_VIDEO_MODEL=klingai/kling-v3.0-t2v
-```
-
-The execution path is:
-
-```text
-runtime admissibility → render packet → AI Gateway video generation → Supabase Storage artifact → UI playback
-```
+This keeps the governance path truthful: successful media becomes a playable video artifact; metadata-only provider responses stay visible as metadata instead of being represented as fake video.
