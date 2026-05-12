@@ -356,6 +356,66 @@ async function executeRenderJob(body: Record<string, unknown>) {
   if (runningError) throw runningError;
 
   const execution = await executeRenderRequest({ job, outputKind, state });
+
+  if (outputKind === "video" && execution.status !== "completed") {
+    const failedAt = new Date().toISOString();
+
+    const { error: failedJobError } = await supabase
+      .from("render_jobs")
+      .update({
+        status: execution.status,
+        model_route: execution.provider,
+        provider: execution.provider,
+        provider_job_id: execution.providerJobId,
+        completed_at: failedAt,
+        progress_status: "video-provider-failed",
+        progress_percent: 0,
+        provider_payload: {
+          provider: execution.provider,
+          providerJobId: execution.providerJobId,
+          outputKind,
+          error: execution.error,
+          metadata: execution.metadata,
+        },
+        error: execution.error,
+      })
+      .eq("id", job.id);
+
+    if (failedJobError) throw failedJobError;
+
+    const { error: failedLineageError } = await supabase
+      .from("lineage_events")
+      .insert({
+        project_id: projectId,
+        scene_id: job.scene_id,
+        render_job_id: job.id,
+        event_type: "video-render-failed",
+        summary: `Video render failed before media artifact creation: ${execution.error ?? "unknown provider failure"}`,
+        payload: {
+          renderJobId: job.id,
+          provider: execution.provider,
+          providerJobId: execution.providerJobId,
+          outputKind,
+          startedAt,
+          completedAt: failedAt,
+          error: execution.error,
+          metadata: execution.metadata,
+        },
+      });
+
+    if (failedLineageError) throw failedLineageError;
+
+    const nextState = await loadRuntimeState(projectId);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: execution.error || "Video provider execution failed.",
+        execution,
+        state: nextState,
+      },
+      { status: 502 },
+    );
+  }
   const persistedMedia = await persistExecutionMedia({
     projectId,
     renderJobId: job.id,
