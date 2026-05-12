@@ -1,3 +1,4 @@
+import { experimental_generateVideo as generateVideo } from "ai";
 import type {
   Admissibility,
   RenderOutputKind,
@@ -66,7 +67,7 @@ export function buildExecutionPacket(
   }));
 
   return {
-    version: "v18-video-provider-execution-packet",
+    version: "v18.3-live-video-provider-execution-packet",
     outputKind,
     renderJobId: job.id,
     sceneId: job.scene_id,
@@ -328,64 +329,24 @@ async function executeVercelGatewayVideoRender(
   packet: Record<string, unknown>,
 ): Promise<RenderExecutionResult> {
   const model =
-    process.env.SOLACEFRAME_VIDEO_MODEL || "bytedance/seedance-2.0-fast";
+    process.env.SOLACEFRAME_VIDEO_MODEL || "bytedance/seedance-v1.0-pro-fast";
   const duration = Number(
     process.env.SOLACEFRAME_VIDEO_DURATION_SECONDS || "5",
   );
   const aspectRatio = process.env.SOLACEFRAME_VIDEO_ASPECT_RATIO || "16:9";
-  const resolution = process.env.SOLACEFRAME_VIDEO_RESOLUTION || "720p";
+  const resolution = process.env.SOLACEFRAME_VIDEO_RESOLUTION || "1280x720";
   const prompt = buildGatewayVideoPrompt(packet);
   const startedAt = new Date().toISOString();
 
   try {
-    const apiKey = getGatewayApiKey();
-
-    if (!apiKey) {
-      throw new Error(
-        "Missing VERCEL_AI_GATEWAY_API_KEY, AI_GATEWAY_API_KEY, or VERCEL_OIDC_TOKEN for video generation.",
-      );
-    }
-
-    // AI SDK v6 reads AI_GATEWAY_API_KEY for Gateway-backed video generation.
-    // Vercel projects often expose VERCEL_AI_GATEWAY_API_KEY instead, so bridge it
-    // explicitly before the dynamic SDK import. Without this, generateVideo can fail
-    // before making any outbound Gateway request, leaving only metadata artifacts.
-    if (!process.env.AI_GATEWAY_API_KEY && process.env.VERCEL_AI_GATEWAY_API_KEY) {
-      process.env.AI_GATEWAY_API_KEY = process.env.VERCEL_AI_GATEWAY_API_KEY;
-    }
-
-    const ai = (await Function(
-      "specifier",
-      "return import(specifier)",
-    )("ai")) as {
-      experimental_generateVideo?: (
-        input: Record<string, unknown>,
-      ) => Promise<Record<string, unknown>>;
-      gateway?: {
-        video?: (modelId: string) => unknown;
-      };
-    };
-
-    const generateVideo = ai.experimental_generateVideo;
-
-    if (!generateVideo) {
-      throw new Error(
-        "AI SDK v6 experimental_generateVideo is not available. Confirm apps/studio has ai@^6 installed.",
-      );
-    }
-
-    const gatewayVideoModel = ai.gateway?.video
-      ? ai.gateway.video(model)
-      : model;
-
-    const result = await generateVideo({
-      model: gatewayVideoModel,
+    const result = (await generateVideo({
+      model,
       prompt,
       duration,
       aspectRatio,
       resolution,
       providerOptions: buildVideoProviderOptions(model),
-    });
+    })) as Record<string, unknown>;
 
     const extraction = extractGeneratedVideo(result);
 
@@ -622,21 +583,69 @@ function safeProviderResponse(result: Record<string, unknown>) {
 }
 
 function buildVideoProviderOptions(model: string) {
-  if (model.startsWith("klingai/"))
+  const pollIntervalMs = Number(
+    process.env.SOLACEFRAME_VIDEO_POLL_INTERVAL_MS || "5000",
+  );
+  const pollTimeoutMs = Number(
+    process.env.SOLACEFRAME_VIDEO_POLL_TIMEOUT_MS || "600000",
+  );
+  const audioEnabled = process.env.SOLACEFRAME_VIDEO_SOUND === "on";
+
+  if (model.startsWith("klingai/")) {
     return {
       klingai: {
         mode: process.env.SOLACEFRAME_KLING_MODE || "pro",
-        sound: process.env.SOLACEFRAME_VIDEO_SOUND || "off",
+        sound: audioEnabled ? "on" : "off",
+        pollIntervalMs,
+        pollTimeoutMs,
       },
     };
-  if (model.startsWith("alibaba/"))
-    return { alibaba: { sound: process.env.SOLACEFRAME_VIDEO_SOUND || "off" } };
-  if (model.startsWith("bytedance/"))
+  }
+
+  if (model.startsWith("alibaba/")) {
     return {
-      bytedance: { sound: process.env.SOLACEFRAME_VIDEO_SOUND || "off" },
+      alibaba: {
+        promptExtend: true,
+        sound: audioEnabled ? "on" : "off",
+        pollIntervalMs,
+        pollTimeoutMs,
+      },
     };
-  if (model.startsWith("xai/"))
-    return { xai: { audio: process.env.SOLACEFRAME_VIDEO_SOUND === "on" } };
+  }
+
+  if (model.startsWith("bytedance/")) {
+    return {
+      bytedance: {
+        watermark: false,
+        generateAudio: audioEnabled,
+        pollIntervalMs,
+        pollTimeoutMs,
+      },
+    };
+  }
+
+  if (model.startsWith("xai/")) {
+    return {
+      xai: {
+        audio: audioEnabled,
+        pollIntervalMs,
+        pollTimeoutMs,
+      },
+    };
+  }
+
+  if (model.startsWith("google/veo")) {
+    return {
+      vertex: {
+        generateAudio: audioEnabled,
+        enhancePrompt: true,
+        pollIntervalMs,
+        pollTimeoutMs,
+        personGeneration: "allow_adult",
+      },
+    };
+  }
+
   return {};
 }
 
