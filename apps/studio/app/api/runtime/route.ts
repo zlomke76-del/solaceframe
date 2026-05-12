@@ -358,6 +358,65 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const execution = await executeRenderRequest({ job, outputKind, state });
   const completedAt = new Date().toISOString();
 
+  if (execution.status === "queued") {
+    const { error: jobError } = await supabase
+      .from("render_jobs")
+      .update({
+        status: "queued",
+        model_route: execution.provider,
+        provider: execution.provider,
+        provider_job_id: execution.providerJobId,
+        output_url: null,
+        artifact_id: null,
+        completed_at: null,
+        progress_status: "provider-accepted-video-job-awaiting-completion",
+        progress_percent: 35,
+        provider_payload: {
+          provider: execution.provider,
+          providerJobId: execution.providerJobId,
+          outputKind,
+          artifactUrlPersisted: false,
+          mimeType: execution.mimeType,
+          error: execution.error,
+          metadata: execution.metadata,
+          v201: {
+            artifactAdmitted: false,
+            reason:
+              "Provider accepted an async video job. No artifact is admitted until a public video URL is returned and persisted.",
+          },
+        },
+        error: null,
+      })
+      .eq("id", job.id);
+
+    if (jobError) throw jobError;
+
+    const { error: lineageError } = await supabase.from("lineage_events").insert({
+      project_id: projectId,
+      scene_id: job.scene_id,
+      render_job_id: job.id,
+      event_type: "render-video-queued",
+      summary: `Video render job accepted by provider: ${outputKind}`,
+      payload: {
+        renderJobId: job.id,
+        artifactId: null,
+        provider: execution.provider,
+        providerJobId: execution.providerJobId,
+        outputKind,
+        startedAt,
+        queuedAt: completedAt,
+        error: null,
+        metadata: execution.metadata,
+        artifactAdmitted: false,
+      },
+    });
+
+    if (lineageError) throw lineageError;
+
+    const nextState = await loadRuntimeState(projectId);
+    return NextResponse.json({ ok: true, execution, state: nextState });
+  }
+
   if (execution.status !== "completed") {
     const { error: jobError } = await supabase
       .from("render_jobs")
