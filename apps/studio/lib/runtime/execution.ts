@@ -69,53 +69,221 @@ export function buildExecutionPacket(
   const unresolvedContradictions = state.contradictions.filter(
     (item) => !item.resolved,
   );
-  const activeCharacters = state.characters.map((character) => ({
-    id: character.id,
-    name: character.name,
-    role: character.role,
-    appearanceAnchor: character.appearance_anchor,
-    runtimeState: character.state,
-    continuityScore: character.continuity_score,
-    pressure: character.pressure,
-  }));
+
+  const compactContinuity = buildRenderableContinuityState(state);
 
   return {
-    version: "v18.3-live-video-provider-execution-packet",
+    version: "v20-renderable-continuity-compression-packet",
     outputKind,
     renderJobId: job.id,
     sceneId: job.scene_id,
     branchId: job.branch_id,
-    prompt: job.prompt,
-    compiledPacket: job.packet,
+    prompt: extractScenePrompt(job),
+    compiledPacket: compactCompiledPacket(job.packet),
     governance: {
-      admissibility: state.admissibilityReport,
-      unresolvedContradictions: unresolvedContradictions.map((item) => ({
+      admissibility: compactAdmissibilityReport(state.admissibilityReport),
+      unresolvedContradictions: unresolvedContradictions.slice(0, 6).map((item) => ({
         id: item.id,
         type: item.contradiction_type,
-        summary: item.summary,
+        summary: limitText(item.summary, 280),
         severity: item.severity,
       })),
     },
-    continuity: {
-      project: state.project,
-      world: state.world,
-      activeBranch: state.activeBranch,
-      characters: activeCharacters,
-      latestContinuityDiff: state.continuityDiffs[0] ?? null,
-      causalEvents: state.causalEvents.slice(0, 30),
-      visualAnchors: buildVisualContinuityAnchors(state),
-    },
+    continuity: compactContinuity,
     rendering: buildRenderInstructions(
       outputKind,
-      job.prompt,
+      extractScenePrompt(job),
       state.admissibilityReport,
     ),
   };
 }
 
+function buildRenderableContinuityState(state: RuntimeState) {
+  const worldState = isRecord(state.world.state) ? state.world.state : {};
+  const latestDiff = state.continuityDiffs[0] ?? null;
+
+  return {
+    compression: {
+      version: "v20-renderable-continuity-state",
+      purpose:
+        "Compact render-facing state. Full runtime ancestry remains in Supabase; providers receive only current load-bearing continuity constraints.",
+      maxProviderContext: "compact-current-state-only",
+    },
+    project: {
+      id: state.project?.id,
+      name: stringValue((state.project as Record<string, unknown> | undefined)?.name) ?? "SolaceFrame Project",
+    },
+    world: {
+      id: state.world.id,
+      name: state.world.name,
+      pressure: state.world.pressure,
+      currentState: compactWorldState(worldState),
+    },
+    activeBranch: {
+      id: state.activeBranch.id,
+      name: state.activeBranch.name,
+      status: state.activeBranch.status,
+      divergence_score: state.activeBranch.divergence_score,
+      fork_reason: limitText(state.activeBranch.fork_reason ?? "", 220) || null,
+    },
+    characters: state.characters.slice(0, 8).map(compactCharacter),
+    latestContinuityDiff: latestDiff
+      ? {
+          id: latestDiff.id,
+          preserved: compactStringArray(latestDiff.preserved, 10, 160),
+          mutated: compactStringArray(latestDiff.mutated, 10, 160),
+          violations: compactStringArray(latestDiff.violations, 10, 160),
+        }
+      : null,
+    causalConstraints: compactCausalEvents(state.causalEvents),
+    visualAnchors: buildVisualContinuityAnchors(state),
+  };
+}
+
+function compactWorldState(worldState: Record<string, unknown>) {
+  return {
+    weather: shortValue(worldState.weather),
+    pressureTrend: shortValue(worldState.pressureTrend),
+    damagedLocations: compactStringArray(worldState.damagedLocations, 8, 160),
+    persistentObjects: compactStringArray(worldState.persistentObjects, 8, 160),
+    renderConstraints: compactStringArray(worldState.renderConstraints, 12, 220),
+    unresolvedTensions: compactStringArray(worldState.unresolvedTensions, 8, 220),
+    repairs: compactRecentRecords(worldState.repairs, 3),
+    latestEvents: compactRecentRecords(worldState.events, 3),
+  };
+}
+
+function compactCharacter(character: RuntimeState["characters"][number]) {
+  const runtimeState = isRecord(character.state) ? character.state : {};
+  return {
+    id: character.id,
+    name: character.name,
+    role: character.role,
+    continuityScore: character.continuity_score,
+    pressure: character.pressure,
+    appearanceAnchor: compactRecord(character.appearance_anchor, 12, 180),
+    runtimeState: {
+      injury: shortValue(runtimeState.injury),
+      carriedObjects: compactStringArray(runtimeState.carriedObjects, 8, 140),
+      emotionalState: shortValue(runtimeState.emotionalState),
+      physicalCondition: shortValue(runtimeState.physicalCondition),
+      currentLocation: shortValue(runtimeState.currentLocation),
+    },
+  };
+}
+
+function compactAdmissibilityReport(report: RuntimeAdmissibilityReport) {
+  return {
+    decision: report.decision,
+    score: report.score,
+    factors: report.factors,
+    reasons: compactStringArray(report.reasons, 8, 220),
+    requiredRepairs: compactStringArray(report.requiredRepairs, 8, 220),
+  };
+}
+
+function compactCompiledPacket(packet: unknown) {
+  if (!isRecord(packet)) return {};
+  return {
+    mode: shortValue(packet.mode),
+    sceneText: limitText(String(packet.sceneText ?? packet.prompt ?? ""), 900),
+    preserve: compactStringArray(packet.preserve, 12, 180),
+    mutated: compactStringArray(packet.mutated, 12, 180),
+    violations: compactStringArray(packet.violations, 12, 180),
+    driftRisk: shortValue(packet.driftRisk),
+    admissibility: shortValue(packet.admissibility),
+    renderConstraints: compactStringArray(packet.renderConstraints, 12, 220),
+    causalEvents: compactStringArray(packet.causalEvents, 12, 180),
+    contradictions: compactRecentRecords(packet.contradictions, 6),
+  };
+}
+
+function extractScenePrompt(job: RuntimeRenderJob) {
+  const packet = isRecord(job.packet) ? job.packet : {};
+  const direct = stringValue(packet.sceneText) || stringValue(packet.prompt);
+  if (direct) return limitText(direct, 1200);
+
+  const raw = String(job.prompt ?? "");
+  const sceneMatch = raw.match(/Scene:\s*([\s\S]*?)(?:\nThe render must|\nPacket:|$)/i);
+  if (sceneMatch?.[1]) return limitText(sceneMatch[1].trim(), 1200);
+
+  const packetIndex = raw.indexOf("Packet:");
+  const withoutPacket = packetIndex >= 0 ? raw.slice(0, packetIndex) : raw;
+  return limitText(withoutPacket, 1200) || "Render the governed SolaceFrame runtime state.";
+}
+
+function compactCausalEvents(events: RuntimeState["causalEvents"]) {
+  const seen = new Set<string>();
+  const compacted = [];
+
+  for (const event of events) {
+    const key = [event.event_type, event.subject, event.predicate, event.object_ref].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    compacted.push({
+      id: event.id,
+      type: event.event_type,
+      subject: limitText(event.subject, 120),
+      predicate: limitText(event.predicate, 120),
+      objectRef: limitText(event.object_ref ?? "", 120) || null,
+      severity: event.severity,
+      reversibility: event.reversibility,
+      repaired: event.repaired,
+    });
+    if (compacted.length >= 12) break;
+  }
+
+  return compacted;
+}
+
+function compactStringArray(value: unknown, limit = 8, maxLength = 160) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => limitText(String(item ?? ""), maxLength))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function compactRecentRecords(value: unknown, limit = 3) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-limit).map((item) => compactRecord(item, 10, 180));
+}
+
+function compactRecord(value: unknown, maxKeys = 12, maxLength = 180): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(value).slice(0, maxKeys)) {
+    const entry = value[key];
+    if (typeof entry === "string") output[key] = limitText(entry, maxLength);
+    else if (typeof entry === "number" || typeof entry === "boolean" || entry === null) output[key] = entry;
+    else if (Array.isArray(entry)) output[key] = compactStringArray(entry, 6, maxLength);
+    else if (isRecord(entry)) output[key] = compactRecord(entry, 6, maxLength);
+  }
+  return output;
+}
+
+function shortValue(value: unknown) {
+  return typeof value === "string" ? limitText(value, 180) : value ?? null;
+}
+
+function limitText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function compactJson(value: unknown) {
+  return limitText(JSON.stringify(value ?? {}, null, 2), 6000);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function buildVisualContinuityAnchors(state: RuntimeState) {
   const mediaArtifacts = state.artifacts.filter((artifact) =>
     Boolean(artifact.public_url) &&
+    !artifact.public_url?.startsWith("data:") &&
     (artifact.mime_type?.startsWith("image/") || artifact.mime_type?.startsWith("video/")),
   );
 
@@ -126,36 +294,25 @@ function buildVisualContinuityAnchors(state: RuntimeState) {
 
   const primaryAnchor = approvedAnchors[0] ?? mediaArtifacts[0] ?? null;
 
+  const compactAnchor = (artifact: (typeof mediaArtifacts)[number], lockStatus?: string) => ({
+    artifactId: artifact.id,
+    artifactType: artifact.artifact_type,
+    publicUrl: artifact.public_url,
+    mimeType: artifact.mime_type,
+    provider: artifact.provider,
+    createdAt: artifact.created_at,
+    lockStatus,
+  });
+
   return {
     primary: primaryAnchor
-      ? {
-          artifactId: primaryAnchor.id,
-          artifactType: primaryAnchor.artifact_type,
-          publicUrl: primaryAnchor.public_url,
-          mimeType: primaryAnchor.mime_type,
-          provider: primaryAnchor.provider,
-          createdAt: primaryAnchor.created_at,
-          lockStatus: approvedAnchors[0] ? "operator-approved" : "latest-media-fallback",
-          metadata: primaryAnchor.metadata,
-        }
+      ? compactAnchor(
+          primaryAnchor,
+          approvedAnchors[0] ? "operator-approved" : "latest-media-fallback",
+        )
       : null,
-    approved: approvedAnchors.slice(0, 8).map((artifact) => ({
-      artifactId: artifact.id,
-      artifactType: artifact.artifact_type,
-      publicUrl: artifact.public_url,
-      mimeType: artifact.mime_type,
-      provider: artifact.provider,
-      createdAt: artifact.created_at,
-      metadata: artifact.metadata,
-    })),
-    recentMedia: mediaArtifacts.slice(0, 8).map((artifact) => ({
-      artifactId: artifact.id,
-      artifactType: artifact.artifact_type,
-      publicUrl: artifact.public_url,
-      mimeType: artifact.mime_type,
-      provider: artifact.provider,
-      createdAt: artifact.created_at,
-    })),
+    approved: approvedAnchors.slice(0, 3).map((artifact) => compactAnchor(artifact, "operator-approved")),
+    recentMedia: mediaArtifacts.slice(0, 3).map((artifact) => compactAnchor(artifact)),
   };
 }
 
@@ -1050,31 +1207,19 @@ function buildGatewayVideoPrompt(packet: Record<string, unknown>) {
     "Primary scene prompt:",
     prompt,
     "Runtime world:",
-    JSON.stringify(
-      { name: world?.name, pressure: world?.pressure, state: world?.state },
-      null,
-      2,
-    ),
+    compactJson({ name: world?.name, pressure: world?.pressure, state: world?.state }),
     "Active branch:",
-    JSON.stringify(
-      {
-        name: branch?.name,
-        status: branch?.status,
-        divergence: branch?.divergence_score,
-      },
-      null,
-      2,
-    ),
+    compactJson({ name: branch?.name, status: branch?.status, divergence: branch?.divergence_score }),
     "Characters and continuity anchors:",
-    JSON.stringify(characters, null, 2),
+    compactJson(characters),
     "Visual continuity anchors:",
-    JSON.stringify((continuity?.visualAnchors as Record<string, unknown> | undefined) ?? {}, null, 2),
+    compactJson((continuity?.visualAnchors as Record<string, unknown> | undefined) ?? {}),
     "Recent causal events:",
-    JSON.stringify(causalEvents, null, 2),
+    compactJson(causalEvents),
     "Governance constraints:",
-    JSON.stringify(governance, null, 2),
+    compactJson(governance),
     "Compiled render packet:",
-    JSON.stringify(compiledPacket ?? {}, null, 2),
+    compactJson(compiledPacket ?? {}),
   ].join("\n\n");
 }
 
@@ -1119,31 +1264,19 @@ function buildGatewayImagePrompt(
     "Primary scene prompt:",
     prompt,
     "Runtime world:",
-    JSON.stringify(
-      { name: world?.name, pressure: world?.pressure, state: world?.state },
-      null,
-      2,
-    ),
+    compactJson({ name: world?.name, pressure: world?.pressure, state: world?.state }),
     "Active branch:",
-    JSON.stringify(
-      {
-        name: branch?.name,
-        status: branch?.status,
-        divergence: branch?.divergence_score,
-      },
-      null,
-      2,
-    ),
+    compactJson({ name: branch?.name, status: branch?.status, divergence: branch?.divergence_score }),
     "Characters and continuity anchors:",
-    JSON.stringify(characters, null, 2),
+    compactJson(characters),
     "Visual continuity anchors:",
-    JSON.stringify((continuity?.visualAnchors as Record<string, unknown> | undefined) ?? {}, null, 2),
+    compactJson((continuity?.visualAnchors as Record<string, unknown> | undefined) ?? {}),
     "Recent causal events:",
-    JSON.stringify(causalEvents, null, 2),
+    compactJson(causalEvents),
     "Governance constraints:",
-    JSON.stringify(governance, null, 2),
+    compactJson(governance),
     "Compiled render packet:",
-    JSON.stringify(compiledPacket ?? {}, null, 2),
+    compactJson(compiledPacket ?? {}),
   ].join("\n\n");
 }
 
