@@ -16,6 +16,9 @@ export type RuntimeWorld = {
   name: string;
   state: Record<string, unknown>;
   pressure: number;
+  memory_state?: Record<string, unknown>;
+  spatial_state?: Record<string, unknown>;
+  object_state?: Record<string, unknown>;
 };
 
 export type RuntimeBranch = {
@@ -39,6 +42,16 @@ export type RuntimeCharacter = {
   state: Record<string, unknown>;
   continuity_score: number;
   pressure: number;
+  identity_lock?: boolean;
+  primary_identity_artifact_id?: string | null;
+  identity_state?: Record<string, unknown>;
+  wardrobe_state?: Record<string, unknown>;
+  hair_state?: Record<string, unknown>;
+  body_topology?: Record<string, unknown>;
+  motion_signature?: Record<string, unknown>;
+  physical_state?: Record<string, unknown>;
+  anatomical_state?: Record<string, unknown>;
+  recovery_state?: Record<string, unknown>;
 };
 
 export type RuntimeScene = {

@@ -150,6 +150,11 @@ function compactWorldState(worldState: Record<string, unknown>) {
     unresolvedTensions: compactStringArray(worldState.unresolvedTensions, 8, 220),
     repairs: compactRecentRecords(worldState.repairs, 3),
     latestEvents: compactRecentRecords(worldState.events, 3),
+    syntheticMemory: compactRecord(worldState.syntheticMemory, 10, 220),
+    physicalState: compactRecord(worldState.physicalState, 10, 120),
+    environmentalState: compactRecord(worldState.environmentalState, 10, 180),
+    objectState: compactRecord(worldState.objectState, 10, 220),
+    spatialState: compactRecord(worldState.spatialState, 10, 220),
   };
 }
 
@@ -168,6 +173,11 @@ function compactCharacter(character: RuntimeState["characters"][number]) {
       emotionalState: shortValue(runtimeState.emotionalState),
       physicalCondition: shortValue(runtimeState.physicalCondition),
       currentLocation: shortValue(runtimeState.currentLocation),
+      physicalState: compactRecord(runtimeState.physicalState, 10, 120),
+      anatomicalState: compactRecord(runtimeState.anatomicalState, 12, 220),
+      hairState: compactRecord(runtimeState.hairState, 8, 120),
+      wardrobeState: compactRecord(runtimeState.wardrobeState, 10, 180),
+      recoveryState: compactRecord(runtimeState.recoveryState, 8, 160),
     },
   };
 }
@@ -376,6 +386,10 @@ function buildContinuityLockMetadata(packet: Record<string, unknown>, outputKind
       "wardrobe silhouette",
       "yellow courier case",
       "left-arm injury visibility",
+      "scars, tattoos, bruises, cuts, burns, and bandage body-location persistence",
+      "hair state up/down/wet/dry continuity",
+      "wardrobe wetness, damage, and layer continuity",
+      "spatial object anchoring and lighting-source logic",
       "damaged bridge/location continuity",
       "rain/cold lighting continuity",
     ],
@@ -389,7 +403,9 @@ function buildRenderInstructions(
 ) {
   const base = [
     "Render only the governed runtime state provided in the packet.",
-    "Preserve character identity, appearance anchors, carried objects, injuries, environment damage, and branch context.",
+    "Preserve character identity, appearance anchors, carried objects, injuries, scars, tattoos, bandage body location, environment damage, and branch context.",
+    "Preserve V24 synthetic memory: fatigue, stress, recovery state, wetness, hair moisture/style, wardrobe damage, object location, and spatial room topology.",
+    "Do not move anatomical markers or bandages to a different side/body region unless the scene explicitly performs a governed repair, removal, or medical change.",
     "Do not repair contradictions implicitly; render unresolved contradictions as visible tension or defer execution if required.",
     "Maintain causal lineage and avoid introducing unsupported objects, locations, or authority changes.",
     `Runtime admissibility decision: ${report.decision}. Survivability score: ${report.score}%.`,
