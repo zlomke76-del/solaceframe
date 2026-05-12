@@ -358,7 +358,14 @@ async function executeRenderJob(body: Record<string, unknown>) {
   const execution = await executeRenderRequest({ job, outputKind, state });
   const completedAt = new Date().toISOString();
 
-  if (execution.status === "queued") {
+  const shouldHoldVideoForAsyncCompletion =
+    outputKind === "video" &&
+    execution.provider === "vercel-ai-gateway-video" &&
+    execution.status !== "blocked" &&
+    !execution.artifactUrl &&
+    !isFatalProviderExecutionError(execution.error);
+
+  if (execution.status === "queued" || shouldHoldVideoForAsyncCompletion) {
     const { error: jobError } = await supabase
       .from("render_jobs")
       .update({
@@ -379,10 +386,11 @@ async function executeRenderJob(body: Record<string, unknown>) {
           mimeType: execution.mimeType,
           error: execution.error,
           metadata: execution.metadata,
-          v201: {
+          v203: {
             artifactAdmitted: false,
+            routeBehavior: "async-video-held-without-502",
             reason:
-              "Provider accepted an async video job. No artifact is admitted until a public video URL is returned and persisted.",
+              "Video provider returned or implied async completion state without an immediate public MP4. The job remains queued for reconciliation; no metadata-only artifact is admitted and the API returns ok:true.",
           },
         },
         error: null,
@@ -396,7 +404,7 @@ async function executeRenderJob(body: Record<string, unknown>) {
       scene_id: job.scene_id,
       render_job_id: job.id,
       event_type: "render-video-queued",
-      summary: `Video render job accepted by provider: ${outputKind}`,
+      summary: `Video render job held for async provider completion: ${outputKind}`,
       payload: {
         renderJobId: job.id,
         artifactId: null,
@@ -408,6 +416,9 @@ async function executeRenderJob(body: Record<string, unknown>) {
         error: null,
         metadata: execution.metadata,
         artifactAdmitted: false,
+        v203: {
+          routeBehavior: "async-video-held-without-502",
+        },
       },
     });
 
@@ -663,6 +674,11 @@ async function executeRenderJob(body: Record<string, unknown>) {
     state: nextState,
   });
 
+}
+
+function isFatalProviderExecutionError(error: string | null) {
+  if (!error) return false;
+  return /\b(400|401|403|404|429)\b|rate limit|quota|billing|unauthorized|forbidden|invalid api key|invalid model|model not found|not supported/i.test(error);
 }
 
 function resolveExecutionMode(outputKind: "image" | "video" | "storyboard") {
