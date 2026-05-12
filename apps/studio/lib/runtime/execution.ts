@@ -457,6 +457,13 @@ export async function executeRenderRequest({
         ? await executeVercelGatewayVideoRender(packet)
         : await executeVercelGatewayRender(packet, outputKind);
     if (gatewayResult.status === "completed") return gatewayResult;
+
+    // Video providers commonly return an accepted async operation before an MP4
+    // is available. That is not a failed render and must not fall through into a
+    // local placeholder or metadata-only artifact. Keep the render job queued so
+    // the provider payload/job id can be reconciled later.
+    if (outputKind === "video") return gatewayResult;
+
     if (process.env.SOLACEFRAME_DISABLE_PLACEHOLDER_FALLBACK === "true")
       return gatewayResult;
 
@@ -752,8 +759,11 @@ async function executeVercelGatewayVideoRender(
       error: null,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const fatal = isFatalVideoGatewayError(message);
+
     return {
-      status: "failed",
+      status: fatal ? "failed" : "queued",
       provider: "vercel-ai-gateway-video",
       providerJobId: null,
       artifactType: "video",
@@ -766,20 +776,28 @@ async function executeVercelGatewayVideoRender(
         aspectRatio,
         resolution,
         startedAt,
-        completedAt: new Date().toISOString(),
-        v181: {
+        completedAt: fatal ? new Date().toISOString() : null,
+        queuedAt: fatal ? null : new Date().toISOString(),
+        v202: {
           providerClass: "ai-gateway-video",
-          completionRuntime: "exception",
-          message: error instanceof Error ? error.message : String(error),
+          completionRuntime: fatal
+            ? "fatal-provider-exception"
+            : "provider-accepted-or-pending-without-extracted-mp4",
+          message,
+          artifactAdmitted: false,
+          routeBehavior: fatal
+            ? "surface failure without artifact admission"
+            : "keep render job queued instead of returning 502 or admitting metadata-only artifact",
         },
         v19: buildContinuityLockMetadata(packet, "video"),
       },
-      error:
-        error instanceof Error
-          ? error.message
-          : "Unknown Vercel AI Gateway video execution error.",
+      error: fatal ? message : null,
     };
   }
+}
+
+function isFatalVideoGatewayError(message: string) {
+  return /(400|401|403|404|429)|rate limit|quota|billing|unauthorized|forbidden|invalid api key|invalid model|model not found|not supported/i.test(message);
 }
 
 
