@@ -116,9 +116,9 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V17 · Storage-Backed Execution Delta</div>
+            <div className="sf-eyebrow">SolaceFrame V18 · Live Video Execution Delta</div>
             <h1 className="sf-title">
-              Governed runtime packets can now execute into image, video, or storyboard artifacts.
+              Governed runtime packets now execute into storage-backed images, storyboards, and AI Gateway video artifacts.
             </h1>
           </div>
 
@@ -376,7 +376,7 @@ export default function Page() {
                         }
                         disabled={Boolean(busy) || latestJob.status === "blocked"}
                       >
-                        {busy === "execute:video" ? "Executing Video..." : "Execute Video"}
+                        {busy === "execute:video" ? "Generating Video..." : "Execute Video"}
                       </button>
                     </div>
 
@@ -393,7 +393,7 @@ export default function Page() {
               <div className="sf-card-head">
                 <div>
                   <div className="sf-eyebrow">Execution Artifacts</div>
-                  <h2>Storage-backed generated outputs and renderer returns</h2>
+                  <h2>Storage-backed generated outputs, video clips, and renderer returns</h2>
                 </div>
                 <div className="sf-branch-pill">{runtime.artifacts.length} artifacts</div>
               </div>
