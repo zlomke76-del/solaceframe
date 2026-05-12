@@ -80,6 +80,23 @@ type ApiRuntimeResponse = {
   message?: string;
 };
 
+const ACTIVE_VIDEO_STATUSES = new Set([
+  "queued",
+  "submitted",
+  "provider_accepted",
+  "generating",
+  "awaiting_media",
+  "reconciling",
+]);
+
+function isActiveVideoJob(job?: RuntimeState["renderJobs"][number] | null) {
+  return Boolean(job && job.output_kind === "video" && ACTIVE_VIDEO_STATUSES.has(job.status));
+}
+
+function statusLabel(status?: string | null) {
+  return String(status || "unknown").replace(/_/g, " ");
+}
+
 function decisionLabel(decision?: string) {
   if (!decision) return "loading";
   return decision.toUpperCase();
@@ -217,6 +234,7 @@ export default function Page() {
   const worldState = useMemo(() => runtime?.world?.state ?? {}, [runtime]);
   const latestDiff = runtime?.continuityDiffs?.[0] ?? null;
   const latestJob = runtime?.renderJobs?.[0] ?? null;
+  const activeVideoJob = runtime?.renderJobs?.find((job) => isActiveVideoJob(job)) ?? null;
   const mediaArtifacts = useMemo(
     () =>
       runtime?.artifacts?.filter(
@@ -268,7 +286,7 @@ export default function Page() {
             "Contradiction Repair",
             "Causal Graph",
             "Render Packet",
-            "Execution Artifacts"
+            "Motion + Image Artifacts"
           ].map((item, index) => (
             <div className="sf-nav-item" key={item}>
               <span>{String(index + 1).padStart(2, "0")}</span>
@@ -285,9 +303,9 @@ export default function Page() {
       <section className="sf-main">
         <header className="sf-top">
           <div>
-            <div className="sf-eyebrow">SolaceFrame V21 · Scenario Bootstrap Runtime</div>
+            <div className="sf-eyebrow">SolaceFrame V22 · Async Video Continuity Runtime</div>
             <h1 className="sf-title">
-              Clear the board, preserve lineage, and start fresh continuity scenarios without losing audit history.
+              Submit video jobs asynchronously, preserve branch continuity under provider delay, and reconcile motion artifacts before admission.
             </h1>
             <div className="sf-scenario-line">Active scenario: <strong>{scenarioTitle}</strong></div>
           </div>
@@ -304,7 +322,7 @@ export default function Page() {
             <section className="sf-card sf-scenario-card">
               <div className="sf-card-head">
                 <div>
-                  <div className="sf-eyebrow">V21 Scenario Control</div>
+                  <div className="sf-eyebrow">V22 Scenario Control</div>
                   <h2>Start fresh without destroying continuity history</h2>
                 </div>
                 <div className="sf-branch-pill">{runtime.world.name}</div>
@@ -610,14 +628,21 @@ export default function Page() {
                   <>
                     <div className="sf-row-card">
                       <div className="sf-row">
-                        <strong>{latestJob.status}</strong>
+                        <strong>{statusLabel(latestJob.status)}</strong>
                         <span>{latestJob.model_route ?? "pending route"}</span>
                       </div>
                       {latestJob.output_url ? (
                         <p>Artifact URL persisted.</p>
+                      ) : latestJob.output_kind === "video" ? (
+                        <p>Video job is preserved for async provider reconciliation.</p>
                       ) : (
                         <p>Queued packet awaiting governed execution.</p>
                       )}
+                      {latestJob.progress_status ? (
+                        <p className="sf-muted">
+                          {statusLabel(latestJob.progress_status)} · {latestJob.progress_percent ?? 0}%
+                        </p>
+                      ) : null}
                     </div>
 
                     <div className="sf-action-row">
@@ -655,11 +680,38 @@ export default function Page() {
                             "execute:video"
                           )
                         }
-                        disabled={Boolean(busy) || latestJob.status === "blocked"}
+                        disabled={Boolean(busy) || latestJob.status === "blocked" || Boolean(activeVideoJob && activeVideoJob.id !== latestJob.id)}
                       >
-                        {busy === "execute:video" ? "Generating Video..." : "Execute Video"}
+                        {busy === "execute:video" ? "Submitting Video..." : "Submit Video Job"}
+                      </button>
+
+                      <button
+                        className="sf-primary subtle"
+                        onClick={() =>
+                          void runRuntimeAction(
+                            activeVideoJob
+                              ? { action: "reconcile_video_job", renderJobId: activeVideoJob.id }
+                              : { action: "refresh_video_jobs", limit: 3 },
+                            "refresh:video"
+                          )
+                        }
+                        disabled={Boolean(busy) || !activeVideoJob}
+                      >
+                        {busy === "refresh:video" ? "Refreshing Video..." : "Refresh Video Status"}
                       </button>
                     </div>
+
+                    {activeVideoJob ? (
+                      <div className="sf-row-card warning">
+                        <div className="sf-row">
+                          <strong>Active video orchestration</strong>
+                          <span>{statusLabel(activeVideoJob.status)}</span>
+                        </div>
+                        <p className="sf-muted">
+                          {statusLabel(activeVideoJob.progress_status)} · {activeVideoJob.progress_percent ?? 0}%
+                        </p>
+                      </div>
+                    ) : null}
 
                     <pre className="sf-code">{JSON.stringify(latestJob.packet, null, 2)}</pre>
                   </>
@@ -673,7 +725,7 @@ export default function Page() {
             <section className="sf-card">
               <div className="sf-card-head">
                 <div>
-                  <div className="sf-eyebrow">Execution Artifacts</div>
+                  <div className="sf-eyebrow">Motion + Image Artifacts</div>
                   <h2>Storage-backed outputs with visual continuity anchors</h2>
                 </div>
                 <div className="sf-branch-pill">{mediaArtifacts.length} media artifacts</div>
@@ -697,6 +749,7 @@ export default function Page() {
                   const isInlinePayload = artifact.public_url?.startsWith("data:");
                   const anchorLocked = isContinuityAnchor(artifact.metadata);
                   const continuityScore = getV19ContinuityScore(artifact.metadata);
+                  const motionAdmission = getV22MotionAdmission(artifact.metadata);
 
                   return (
                     <div className={`sf-row-card artifact-card ${anchorLocked ? "continuity-anchor" : ""}`} key={artifact.id}>
@@ -735,6 +788,11 @@ export default function Page() {
                             </span>
                             {anchorLocked ? <span className="sf-chip gold">Visual anchor locked</span> : null}
                             {continuityScore !== null ? <span className="sf-chip blue">{continuityScore}% continuity</span> : null}
+                            {motionAdmission ? (
+                              <span className="sf-chip gold">
+                                {motionAdmission.status} · {motionAdmission.aggregate_score}% motion
+                              </span>
+                            ) : null}
                             {artifact.storage_path ? (
                               <span className="sf-chip blue">{artifact.storage_path}</span>
                             ) : null}
@@ -797,6 +855,17 @@ function getV19ContinuityScore(metadata: Record<string, unknown>) {
   if (!v19 || typeof v19 !== "object") return null;
   const score = (v19 as Record<string, unknown>).continuityScore;
   return typeof score === "number" ? score : null;
+}
+
+function getV22MotionAdmission(metadata: Record<string, unknown>) {
+  const v22 = metadata.v22;
+  if (!v22 || typeof v22 !== "object") return null;
+  const admission = (v22 as Record<string, unknown>).admission;
+  if (!admission || typeof admission !== "object") return null;
+  const record = admission as Record<string, unknown>;
+  const status = typeof record.status === "string" ? record.status : "review";
+  const aggregate_score = typeof record.aggregate_score === "number" ? record.aggregate_score : 0;
+  return { status, aggregate_score };
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
