@@ -60,9 +60,17 @@ export function analyzeScene(
   const worldState = world.state ?? {};
   const damagedLocations = readStringArray(worldState.damagedLocations);
   const persistentObjects = readStringArray(worldState.persistentObjects);
+  const primaryCharacter = resolvePrimarySceneCharacter(sceneText, characters);
+  const primaryCharacterName = primaryCharacter?.name ?? "current character";
+  const primaryLocation = resolvePrimarySceneLocation(lower, world.name);
 
-  if (lower.includes("elena")) preserve.add("Elena identity anchor");
-  if (lower.includes("ren")) preserve.add("Ren relationship state");
+  for (const character of characters) {
+    const nameLower = character.name.toLowerCase();
+    const firstName = nameLower.split(" ")[0] ?? nameLower;
+    if (lower.includes(nameLower) || lower.includes(firstName)) {
+      preserve.add(`${character.name} identity anchor`);
+    }
+  }
   if (lower.includes("courier") || lower.includes("case")) {
     preserve.add("yellow courier case lineage");
     renderConstraints.add("yellow courier case must remain consistent across frame lineage");
@@ -80,15 +88,15 @@ export function analyzeScene(
 
   if (lower.includes("bridge")) {
     preserve.add("bridge damage continuity");
-    renderConstraints.add("eastern bridge state must match prior damage unless repaired");
+    renderConstraints.add(`${primaryLocation} state must match prior damage unless repaired`);
   }
 
   if (lower.includes("damage") || lower.includes("collapse") || lower.includes("destroy")) {
     mutated.add("location damage");
     causalEvents.push({
-      event_key: "location:eastern-bridge:damaged",
+      event_key: `location:${slugify(primaryLocation)}:damaged`,
       event_type: "location-damaged",
-      subject: "eastern bridge",
+      subject: primaryLocation,
       predicate: "damaged",
       object_ref: "world",
       severity: lower.includes("destroy") ? 8 : 6,
@@ -97,30 +105,32 @@ export function analyzeScene(
     });
   }
 
-  if (lower.includes("injury") || lower.includes("arm")) {
-    preserve.add("physical injury continuity");
-    renderConstraints.add("Elena left-arm injury must be visible or narratively accounted for");
+  if (lower.includes("injury") || lower.includes("wound") || lower.includes("bandage") || lower.includes("scar") || lower.includes("tattoo") || lower.includes("arm")) {
+    const anatomicalTarget = resolveAnatomicalTarget(lower);
+    preserve.add("physical/anatomical continuity");
+    renderConstraints.add(`${primaryCharacterName} ${anatomicalTarget} must remain anatomically consistent if visible`);
     causalEvents.push({
-      event_key: "character:elena-voss:left-arm-injury",
-      event_type: "character-injured",
-      subject: "Elena Voss",
-      predicate: "injured",
-      object_ref: "left arm",
-      severity: 5,
-      reversibility: "repairable",
-      payload: { source: "keyword:injury/arm" }
+      event_key: `character:${slugify(primaryCharacterName)}:${slugify(anatomicalTarget)}`,
+      event_type: lower.includes("tattoo") ? "character-tattooed" : lower.includes("scar") ? "character-scarred" : lower.includes("bandage") ? "character-bandaged" : "character-injured",
+      subject: primaryCharacterName,
+      predicate: lower.includes("tattoo") ? "tattoo-persistent" : lower.includes("scar") ? "scar-persistent" : lower.includes("bandage") ? "bandaged" : "injured",
+      object_ref: anatomicalTarget,
+      severity: lower.includes("wound") || lower.includes("injury") ? 5 : 3,
+      reversibility: lower.includes("tattoo") || lower.includes("scar") ? "irreversible" : "repairable",
+      payload: { source: "keyword:injury/wound/bandage/scar/tattoo/body", v26: "anatomical persistence" }
     });
   }
 
   if (lower.includes("trust") || lower.includes("withhold") || lower.includes("hide") || lower.includes("betray")) {
+    const relationshipTarget = resolveRelationshipTarget(sceneText, characters, primaryCharacterName);
     mutated.add("relationship pressure");
-    renderConstraints.add("Elena and Ren relationship must preserve degraded trust state");
+    renderConstraints.add(`${primaryCharacterName} / ${relationshipTarget} relationship must preserve degraded trust state only if both are scene-relevant`);
     causalEvents.push({
-      event_key: "relationship:elena-ren:trust-degraded",
+      event_key: `relationship:${slugify(primaryCharacterName)}-${slugify(relationshipTarget)}:trust-degraded`,
       event_type: "relationship-degraded",
-      subject: "Elena Voss",
+      subject: primaryCharacterName,
       predicate: "trust-degraded",
-      object_ref: "Ren Kaito",
+      object_ref: relationshipTarget,
       severity: 6,
       reversibility: "repairable",
       payload: { source: "relationship keyword" }
@@ -132,7 +142,7 @@ export function analyzeScene(
     causalEvents.push({
       event_key: "environment:weather:pressure",
       event_type: "environment-pressure",
-      subject: "Neon District 7",
+      subject: world.name,
       predicate: "weather-pressure-increased",
       object_ref: "weather",
       severity: 4,
@@ -196,8 +206,8 @@ export function analyzeScene(
     if (event.event_type === "location-damaged") {
       renderConstraints.add(`${event.subject} remains damaged unless repaired`);
     }
-    if (event.event_type === "character-injured") {
-      renderConstraints.add(`${event.subject} ${event.object_ref ?? "injury"} persists unless healed`);
+    if (["character-injured", "character-bandaged", "character-scarred", "character-tattooed"].includes(event.event_type)) {
+      renderConstraints.add(`${event.subject} ${event.object_ref ?? "anatomical state"} persists unless healed, removed, or explicitly revised through lineage`);
     }
     if (event.event_type === "relationship-degraded") {
       renderConstraints.add(`${event.subject} / ${event.object_ref} relationship remains degraded`);
@@ -323,6 +333,12 @@ export function mutateCharacters(
     const pressureIncrease = analysis.driftRisk === "high" ? 12 : analysis.driftRisk === "medium" ? 6 : 2;
     const continuityDrop = analysis.driftRisk === "high" ? 8 : analysis.driftRisk === "medium" ? 3 : 1;
 
+    const nextAnatomicalState: Record<string, unknown> = {
+      ...(typeof character.anatomical_state === "object" && character.anatomical_state !== null
+        ? character.anatomical_state
+        : {}),
+    };
+
     const nextState: Record<string, unknown> = {
       ...character.state,
       history: [
@@ -338,8 +354,33 @@ export function mutateCharacters(
       ]
     };
 
-    if (analysis.causalEvents.some((event) => event.event_type === "character-injured" && event.subject === character.name)) {
-      nextState.injury = "left-arm injury active";
+    for (const event of analysis.causalEvents.filter((item) => item.subject === character.name)) {
+      const target = event.object_ref ?? "anatomical state";
+      if (event.event_type === "character-injured") {
+        nextState.injury = `${target} injury active`;
+        nextAnatomicalState.wounds = uniqueStrings([
+          ...readStringArray(nextAnatomicalState.wounds),
+          target,
+        ]);
+      }
+      if (event.event_type === "character-bandaged") {
+        nextAnatomicalState.bandages = uniqueStrings([
+          ...readStringArray(nextAnatomicalState.bandages),
+          target,
+        ]);
+      }
+      if (event.event_type === "character-scarred") {
+        nextAnatomicalState.scars = uniqueStrings([
+          ...readStringArray(nextAnatomicalState.scars),
+          target,
+        ]);
+      }
+      if (event.event_type === "character-tattooed") {
+        nextAnatomicalState.tattoos = uniqueStrings([
+          ...readStringArray(nextAnatomicalState.tattoos),
+          target,
+        ]);
+      }
     }
 
     if (analysis.causalEvents.some((event) => event.event_type === "relationship-degraded" && event.subject === character.name)) {
@@ -356,7 +397,8 @@ export function mutateCharacters(
       ...character,
       pressure: Math.min(100, character.pressure + pressureIncrease),
       continuity_score: Math.max(0, character.continuity_score - continuityDrop),
-      state: nextState
+      state: nextState,
+      anatomical_state: nextAnatomicalState
     };
   });
 }
@@ -446,6 +488,75 @@ export function evaluateRuntimeAdmissibility(input: {
     reasons,
     requiredRepairs
   };
+}
+
+function resolvePrimarySceneCharacter(sceneText: string, characters: RuntimeCharacter[]) {
+  const lower = sceneText.toLowerCase();
+  return characters.find((character) => {
+    const nameLower = character.name.toLowerCase();
+    const firstName = nameLower.split(" ")[0] ?? nameLower;
+    return lower.includes(nameLower) || lower.includes(firstName);
+  }) ?? characters.find((character) => (character.state as Record<string, unknown>).archived !== true) ?? null;
+}
+
+function resolveRelationshipTarget(sceneText: string, characters: RuntimeCharacter[], primaryCharacterName: string) {
+  const lower = sceneText.toLowerCase();
+  const other = characters.find((character) => {
+    if (character.name === primaryCharacterName) return false;
+    const nameLower = character.name.toLowerCase();
+    const firstName = nameLower.split(" ")[0] ?? nameLower;
+    return lower.includes(nameLower) || lower.includes(firstName);
+  });
+
+  return other?.name ?? "scene relationship counterparty";
+}
+
+function resolvePrimarySceneLocation(lower: string, fallbackWorldName: string) {
+  const candidates = [
+    "apartment bedroom",
+    "apartment mirror",
+    "bathroom",
+    "shower",
+    "city sidewalk",
+    "boutique hotel lobby",
+    "eastern bridge",
+    "hospital",
+    "street",
+    "warehouse",
+  ];
+
+  return candidates.find((candidate) => lower.includes(candidate)) ?? (lower.includes("bridge") ? "eastern bridge" : fallbackWorldName);
+}
+
+function resolveAnatomicalTarget(lower: string) {
+  const targets = [
+    "left forearm",
+    "right forearm",
+    "left arm",
+    "right arm",
+    "left shoulder",
+    "right shoulder",
+    "upper back",
+    "lower abdomen",
+    "face",
+    "neck",
+    "hand",
+    "leg",
+  ];
+
+  return targets.find((target) => lower.includes(target)) ?? (lower.includes("arm") ? "left arm" : "body");
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function clampNumber(value: number, min: number, max: number) {
