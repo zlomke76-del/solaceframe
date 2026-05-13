@@ -10,6 +10,7 @@ import {
 } from "@/lib/runtime/engine";
 import { executeRenderRequest } from "@/lib/runtime/execution";
 import { buildResolvedPacket, resolveContinuityForScene } from "@/lib/runtime/continuity-resolver";
+import { buildV26ResolvedPacket, resolveSpatialRealityForScene } from "@/lib/runtime/spatial-runtime";
 import type {
   RuntimeArtifact,
   RuntimeCausalEvent,
@@ -166,7 +167,17 @@ async function compileScene(body: Record<string, unknown>) {
     state,
     analysis,
   });
-  const resolvedPacket = buildResolvedPacket(analysis.packet, continuityResolution);
+  const v25Packet = buildResolvedPacket(analysis.packet, continuityResolution);
+  const spatialResolution = resolveSpatialRealityForScene({
+    sceneText,
+    state,
+    analysis,
+    continuityResolution,
+  });
+  const resolvedPacket = buildV26ResolvedPacket({
+    packet: v25Packet,
+    spatialResolution,
+  });
 
   const beforeState = {
     world: state.world,
@@ -176,6 +187,7 @@ async function compileScene(body: Record<string, unknown>) {
     activeBranch: state.activeBranch,
     admissibilityReport: state.admissibilityReport,
     continuityResolution,
+    spatialResolution,
   };
 
   const nextWorld = mutateWorld(state.world, analysis);
@@ -248,6 +260,8 @@ async function compileScene(body: Record<string, unknown>) {
     .update({
       state: nextWorld.state,
       pressure: nextWorld.pressure,
+      spatial_state: spatialResolution.nextSpatialState,
+      object_state: spatialResolution.nextObjectState,
     })
     .eq("id", state.world.id);
 
@@ -258,6 +272,9 @@ async function compileScene(body: Record<string, unknown>) {
       .from("characters")
       .update({
         state: character.state,
+        anatomical_state: character.anatomical_state ?? {},
+        physical_state: character.physical_state ?? {},
+        recovery_state: character.recovery_state ?? {},
         continuity_score: character.continuity_score,
         pressure: character.pressure,
       })
@@ -340,13 +357,14 @@ async function compileScene(body: Record<string, unknown>) {
       renderConstraints: continuityResolution.resolvedRenderConstraints,
       suppressedConstraints: continuityResolution.suppressedConstraints,
       continuityResolution,
+      spatialResolution,
     },
   });
 
   if (lineageError) throw lineageError;
 
   const nextState = await loadRuntimeState(projectId);
-  return NextResponse.json({ ok: true, analysis, continuityResolution, state: nextState });
+  return NextResponse.json({ ok: true, analysis, continuityResolution, spatialResolution, state: nextState });
 }
 
 async function executeRenderJob(body: Record<string, unknown>) {
@@ -2016,12 +2034,46 @@ function buildCanonicalPrompt(
           suppressedConstraints: packet.continuityResolution.suppressedConstraints,
         }
       : undefined,
+    v26: summarizeV26Packet(packet.v26),
   };
 
   return [
     "Governed synthetic media render.",
     `Scene: ${sceneText}`,
     "The render must obey V25 scene-local continuity resolution: active facts are visual instructions; dormant facts are retained memory, not render pressure.",
+    "The render must obey V26 spatial reality resolution: active spatial/object/body anchors are local constraints; dormant anchors are retained canonical truth, not visual pressure.",
     `Compact packet: ${JSON.stringify(compactPacket)}`,
   ].join("\n");
+}
+
+
+function summarizeV26Packet(value: unknown) {
+  if (!isRecord(value)) return undefined;
+  const spatialRealityRuntime = isRecord(value.spatialRealityRuntime)
+    ? value.spatialRealityRuntime
+    : undefined;
+
+  if (!spatialRealityRuntime) return undefined;
+
+  return {
+    spatialRealityRuntime: {
+      version: spatialRealityRuntime.version,
+      sceneLocation: spatialRealityRuntime.sceneLocation,
+      admissibility: spatialRealityRuntime.admissibility,
+      spatialPressure: spatialRealityRuntime.spatialPressure,
+      activeAnchors: Array.isArray(spatialRealityRuntime.activeAnchors)
+        ? spatialRealityRuntime.activeAnchors.slice(0, 8)
+        : [],
+      dormantAnchorCount: Array.isArray(spatialRealityRuntime.dormantAnchors)
+        ? spatialRealityRuntime.dormantAnchors.length
+        : 0,
+      suppressedAnchorCount: Array.isArray(spatialRealityRuntime.suppressedAnchors)
+        ? spatialRealityRuntime.suppressedAnchors.length
+        : 0,
+      spatialRenderConstraints: Array.isArray(spatialRealityRuntime.spatialRenderConstraints)
+        ? spatialRealityRuntime.spatialRenderConstraints.slice(0, 8)
+        : [],
+      memoryCompaction: spatialRealityRuntime.memoryCompaction,
+    },
+  };
 }
